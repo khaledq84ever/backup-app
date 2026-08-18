@@ -11,4 +11,5 @@
 
 server/node_modules/
 server/server.log
+server/drive-sync.log
 server/data/

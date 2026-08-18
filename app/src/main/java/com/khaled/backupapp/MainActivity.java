@@ -4,11 +4,14 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.ContactsContract;
 import android.provider.MediaStore;
 import android.provider.Settings;
@@ -24,6 +27,8 @@ import android.widget.Toast;
 import androidx.documentfile.provider.DocumentFile;
 
 import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -54,6 +59,13 @@ public class MainActivity extends Activity {
 
     static final int REQ_PERMS = 100;
     static final int REQ_PICK_FOLDER = 101;
+    static final int REQ_ALL_FILES_ACCESS = 102;
+
+    // Top-level folders under external storage that are either protected
+    // (Android/data, Android/obb — unreadable even with All-Files-Access
+    // on API 30+) or already covered by the MediaStore photos/videos backup.
+    static final java.util.Set<String> SKIP_TOP_LEVEL = new java.util.HashSet<>(java.util.Arrays.asList(
+            "Android", "DCIM", "Pictures", "Movies"));
 
     TextView logView;
     ScrollView logScroll;
@@ -106,7 +118,9 @@ public class MainActivity extends Activity {
         root.addView(actionButton("Photos && Videos", v -> uploader.execute(this::backupMedia)));
         root.addView(actionButton("Contacts", v -> uploader.execute(this::backupContacts)));
         root.addView(actionButton("SMS", v -> uploader.execute(this::backupSms)));
-        root.addView(actionButton("Pick Folder && Backup Files", v -> pickFolder()));
+        root.addView(actionButton("Installed Apps", v -> uploader.execute(this::backupApps)));
+        root.addView(actionButton("All Device Folders", v -> backupAllFiles()));
+        root.addView(actionButton("Pick One Folder (fallback)", v -> pickFolder()));
 
         TextView logLabel = new TextView(this);
         logLabel.setText("Log");
@@ -154,11 +168,13 @@ public class MainActivity extends Activity {
         long contacts = prefs.getLong("last_contacts", 0);
         long sms = prefs.getLong("last_sms", 0);
         long files = prefs.getLong("last_files", 0);
+        long apps = prefs.getLong("last_apps", 0);
         statusView.setText(
                 "Last backup — media: " + fmt(photos) +
                 "  |  contacts: " + fmt(contacts) +
                 "  |  sms: " + fmt(sms) +
-                "  |  files: " + fmt(files));
+                "  |  files: " + fmt(files) +
+                "  |  apps: " + fmt(apps));
     }
 
     String fmt(long t) {
@@ -182,8 +198,9 @@ public class MainActivity extends Activity {
             backupContacts();
             backupSms();
             backupMedia();
-            log("Everything done. Use \"Pick Folder\" separately for arbitrary files.");
+            backupApps();
         });
+        backupAllFiles();
     }
 
     // ── permissions ─────────────────────────────────────────────
@@ -373,6 +390,8 @@ public class MainActivity extends Activity {
                         Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) {}
             uploader.execute(() -> backupFolder(treeUri));
+        } else if (requestCode == REQ_ALL_FILES_ACCESS) {
+            log("All files access: " + (hasAllFilesAccess() ? "granted, tap \"All Device Folders\" again" : "still not granted"));
         }
     }
 
@@ -388,6 +407,112 @@ public class MainActivity extends Activity {
         prefs.edit().putLong("last_files", System.currentTimeMillis()).apply();
         runOnUiThread(this::refreshStatus);
         log("Files: " + counters[0] + "/" + counters[1] + " uploaded");
+    }
+
+    // ── entire device storage (all folders) ─────────────────────
+    boolean hasAllFilesAccess() {
+        if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
+        return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    void backupAllFiles() {
+        if (!hasAllFilesAccess()) {
+            if (Build.VERSION.SDK_INT >= 30) {
+                toast("Grant \"All files access\" for Backup App, then tap this button again.");
+                try {
+                    Intent i = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(i, REQ_ALL_FILES_ACCESS);
+                } catch (Exception e) {
+                    startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                            REQ_ALL_FILES_ACCESS);
+                }
+            } else {
+                requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_PERMS);
+            }
+            return;
+        }
+        uploader.execute(this::backupAllFilesNow);
+    }
+
+    void backupAllFilesNow() {
+        File root = Environment.getExternalStorageDirectory();
+        log("All Files: scanning " + root + " ...");
+        int[] counters = {0, 0};
+        File[] top = root.listFiles();
+        if (top != null) {
+            for (File f : top) {
+                if (f.isDirectory() && SKIP_TOP_LEVEL.contains(f.getName())) continue;
+                walkAndUploadFile(f, f.getName(), counters);
+            }
+        }
+        prefs.edit().putLong("last_files", System.currentTimeMillis()).apply();
+        runOnUiThread(this::refreshStatus);
+        log("All Files: " + counters[0] + "/" + counters[1] + " uploaded");
+    }
+
+    void walkAndUploadFile(File f, String rel, int[] counters) {
+        if (f.isDirectory()) {
+            File[] children = f.listFiles();
+            if (children == null) return;
+            for (File c : children) walkAndUploadFile(c, rel + "/" + c.getName(), counters);
+        } else {
+            counters[1]++;
+            try (InputStream in = new FileInputStream(f)) {
+                boolean ok = uploadStream("files", rel, in, "application/octet-stream");
+                if (ok) counters[0]++;
+                if (counters[1] % 20 == 0) log("files: " + counters[0] + "/" + counters[1]);
+            } catch (Exception e) {
+                Log.w("BackupApp", "file upload failed: " + rel, e);
+            }
+        }
+    }
+
+    // ── installed apps (metadata + best-effort APK copy) ───────
+    void backupApps() {
+        PackageManager pm = getPackageManager();
+        List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+        StringBuilder json = new StringBuilder("[\n");
+        int count = 0, apkOk = 0;
+        log("Apps: found " + apps.size() + " installed apps, reading...");
+        for (ApplicationInfo ai : apps) {
+            boolean isSystem = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+            String versionName = "";
+            long versionCode = 0;
+            try {
+                PackageInfo pi = pm.getPackageInfo(ai.packageName, 0);
+                versionName = pi.versionName != null ? pi.versionName : "";
+                versionCode = Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+            } catch (Exception ignored) {}
+            String label = String.valueOf(pm.getApplicationLabel(ai));
+
+            if (count > 0) json.append(",\n");
+            json.append("  {\"package\":").append(jsonStr(ai.packageName))
+                    .append(",\"name\":").append(jsonStr(label))
+                    .append(",\"versionName\":").append(jsonStr(versionName))
+                    .append(",\"versionCode\":").append(versionCode)
+                    .append(",\"system\":").append(isSystem).append("}");
+            count++;
+
+            // Best-effort: back up the installed APK for user (non-system) apps.
+            if (!isSystem && ai.sourceDir != null) {
+                try (InputStream in = new FileInputStream(ai.sourceDir)) {
+                    boolean ok = uploadStream("apps", ai.packageName + ".apk", in, "application/vnd.android.package-archive");
+                    if (ok) apkOk++;
+                } catch (Exception e) {
+                    Log.w("BackupApp", "apk backup skipped: " + ai.packageName, e);
+                }
+            }
+        }
+        json.append("\n]\n");
+        boolean ok = uploadBytes("apps", "apps.json",
+                json.toString().getBytes(StandardCharsets.UTF_8), "application/json");
+        if (ok) {
+            prefs.edit().putLong("last_apps", System.currentTimeMillis()).apply();
+            runOnUiThread(this::refreshStatus);
+        }
+        log("Apps: " + count + " listed, " + apkOk + " APKs uploaded, list " + (ok ? "ok" : "FAILED"));
     }
 
     void walkAndUpload(DocumentFile dir, String relPrefix, int[] counters) {

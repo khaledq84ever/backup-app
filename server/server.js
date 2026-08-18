@@ -89,7 +89,7 @@ app.get('/api/status/:device', (req, res) => {
   const device = req.params.device;
   if (!safeSegment(device)) return res.status(400).json({ ok: false, error: 'bad device' });
   const base = path.join(DATA_DIR, device);
-  const categories = ['photos', 'videos', 'contacts', 'sms', 'files'];
+  const categories = ['photos', 'videos', 'contacts', 'sms', 'files', 'apps'];
   const status = {};
   for (const c of categories) status[c] = dirStats(path.join(base, c));
   res.json({ ok: true, device, status });
