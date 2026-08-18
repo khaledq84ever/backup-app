@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Backup server is plain HTTP on the VPS's public IP (no domain/cert).
+     Scope cleartext to just that IP instead of the whole app. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">72.60.89.132</domain>
+    </domain-config>
+</network-security-config>

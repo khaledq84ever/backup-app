@@ -1,0 +1,22 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.khaled.backupapp"
+    compileSdkVersion 34
+    defaultConfig {
+        applicationId "com.khaled.backupapp"
+        minSdkVersion 24
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+}
