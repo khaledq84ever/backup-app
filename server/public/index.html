@@ -43,19 +43,34 @@
   </div>
 
   <div class="card">
-    <div class="devices" id="devices">Loading devices…</div>
+    <input type="password" id="key" placeholder="Backup key"
+           style="width:100%; padding:10px; border-radius:8px; border:1px solid #1F1F2E;
+                  background:#0A0A0F; color:#fff; margin-bottom:10px; font-size:14px;">
+    <button id="viewBtn" class="dl" style="border:none; width:100%; cursor:pointer;">View device status</button>
+    <div class="devices" id="devices" style="margin-top:14px;"></div>
   </div>
 </div>
 <script>
+// Device names and backup sizes are private, so they're never fetched until
+// a key is supplied - this page is public and served with no other auth.
+const keyEl = document.getElementById('key');
+const el = document.getElementById('devices');
+const savedKey = sessionStorage.getItem('backupKey');
+if (savedKey) keyEl.value = savedKey;
+
 async function load() {
-  const el = document.getElementById('devices');
+  const key = keyEl.value;
+  if (!key) { el.textContent = 'Enter the backup key to view status.'; return; }
+  sessionStorage.setItem('backupKey', key);
+  el.textContent = 'Loading devices…';
   try {
-    const r = await fetch('/api/devices');
+    const r = await fetch('/api/devices', { headers: { 'X-Backup-Key': key } });
+    if (r.status === 401) { el.textContent = 'Wrong key.'; return; }
     const { devices } = await r.json();
     if (!devices.length) { el.textContent = 'No backups received yet.'; return; }
     el.innerHTML = '';
     for (const d of devices) {
-      const sr = await fetch('/api/status/' + encodeURIComponent(d));
+      const sr = await fetch('/api/status/' + encodeURIComponent(d), { headers: { 'X-Backup-Key': key } });
       const { status } = await sr.json();
       const totalFiles = Object.values(status).reduce((a, s) => a + s.files, 0);
       const totalBytes = Object.values(status).reduce((a, s) => a + s.bytes, 0);
@@ -68,7 +83,8 @@ async function load() {
     el.textContent = 'Could not load status.';
   }
 }
-load();
+document.getElementById('viewBtn').addEventListener('click', load);
+if (savedKey) load();
 </script>
 </body>
 </html>

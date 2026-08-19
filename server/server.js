@@ -1,17 +1,37 @@
 // Backup App server — receives uploads from the Android app and serves the APK.
 const express = require('express');
 const multer = require('multer');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 4425;
 const DATA_DIR = path.join(__dirname, 'data');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const BACKUP_KEY = process.env.BACKUP_APP_KEY;
+
+// Every endpoint here reads or writes personal data (SMS, contacts, photos,
+// installed APKs) with no other access control, so a missing key is treated
+// as a misconfiguration rather than "run open" — refuse to start instead of
+// silently serving everyone's backups to anyone who finds the IP:port.
+if (!BACKUP_KEY) {
+  console.error('BACKUP_APP_KEY is not set. Refusing to start with no auth on personal-data endpoints.');
+  console.error('Set it, e.g.: BACKUP_APP_KEY=$(openssl rand -hex 32) node server.js');
+  process.exit(1);
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const app = express();
 app.use(express.static(PUBLIC_DIR));
+
+function requireKey(req, res, next) {
+  const supplied = Buffer.from(String(req.get('x-backup-key') || ''));
+  const expected = Buffer.from(BACKUP_KEY);
+  const ok = supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+  if (!ok) return res.status(401).json({ ok: false, error: 'unauthorized' });
+  next();
+}
 
 // Only allow simple id-like device/category segments; relpath may have
 // subfolders but never "..", an absolute path, or a device/category
@@ -48,7 +68,7 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB per file
 });
 
-app.post('/api/upload', (req, res) => {
+app.post('/api/upload', requireKey, (req, res) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
       console.error('upload error:', err.message);
@@ -78,14 +98,14 @@ function dirStats(dir) {
   return { files, bytes, latest };
 }
 
-app.get('/api/devices', (req, res) => {
+app.get('/api/devices', requireKey, (req, res) => {
   const devices = fs.existsSync(DATA_DIR)
     ? fs.readdirSync(DATA_DIR, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)
     : [];
   res.json({ devices });
 });
 
-app.get('/api/status/:device', (req, res) => {
+app.get('/api/status/:device', requireKey, (req, res) => {
   const device = req.params.device;
   if (!safeSegment(device)) return res.status(400).json({ ok: false, error: 'bad device' });
   const base = path.join(DATA_DIR, device);

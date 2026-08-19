@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
 
@@ -70,9 +71,11 @@ public class MainActivity extends Activity {
     TextView logView;
     ScrollView logScroll;
     TextView statusView;
+    Button backupEverythingBtn;
     SharedPreferences prefs;
     ExecutorService uploader = Executors.newSingleThreadExecutor();
     String deviceId;
+    final AtomicBoolean backupRunning = new AtomicBoolean(false);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -83,6 +86,10 @@ public class MainActivity extends Activity {
 
         buildUi();
         requestPerms();
+        if (BuildConfig.BACKUP_KEY.isEmpty()) {
+            log("[WARN] No BACKUP_KEY built into this APK - set BACKUP_KEY in local.properties " +
+                    "and rebuild, or an authenticated server will reject every upload with 401.");
+        }
     }
 
     // ── UI ──────────────────────────────────────────────────────
@@ -114,7 +121,8 @@ public class MainActivity extends Activity {
         refreshStatus();
         root.addView(statusView);
 
-        root.addView(actionButton("Backup Everything", v -> backupEverything()));
+        backupEverythingBtn = actionButton("Backup Everything", v -> backupEverything());
+        root.addView(backupEverythingBtn);
         root.addView(actionButton("Photos && Videos", v -> uploader.execute(this::backupMedia)));
         root.addView(actionButton("Contacts", v -> uploader.execute(this::backupContacts)));
         root.addView(actionButton("SMS", v -> uploader.execute(this::backupSms)));
@@ -194,13 +202,34 @@ public class MainActivity extends Activity {
     }
 
     void backupEverything() {
+        // uploader is a single-thread executor, so a task submitted here always
+        // runs after every task already queued - queuing this as the last step
+        // of each branch below reliably marks the whole run finished exactly
+        // once, regardless of whether the all-files branch had permission yet.
+        if (!backupRunning.compareAndSet(false, true)) {
+            toast("A backup is already running.");
+            return;
+        }
+        runOnUiThread(() -> backupEverythingBtn.setEnabled(false));
+
         uploader.execute(() -> {
             backupContacts();
             backupSms();
             backupMedia();
             backupApps();
         });
-        backupAllFiles();
+        if (hasAllFilesAccess()) {
+            uploader.execute(this::backupAllFilesNow);
+            uploader.execute(this::finishBackupEverything);
+        } else {
+            uploader.execute(this::finishBackupEverything);
+            backupAllFiles();
+        }
+    }
+
+    void finishBackupEverything() {
+        backupRunning.set(false);
+        runOnUiThread(() -> backupEverythingBtn.setEnabled(true));
     }
 
     // ── permissions ─────────────────────────────────────────────
@@ -558,6 +587,7 @@ public class MainActivity extends Activity {
             conn.setReadTimeout(60000);
             conn.setChunkedStreamingMode(64 * 1024);
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + BOUNDARY);
+            conn.setRequestProperty("X-Backup-Key", BuildConfig.BACKUP_KEY);
 
             try (OutputStream raw = conn.getOutputStream();
                  BufferedOutputStream out = new BufferedOutputStream(raw)) {

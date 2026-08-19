@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+// BACKUP_KEY is the shared secret the app sends to the server on every
+// upload. It's read from local.properties (gitignored) instead of being
+// hardcoded here, since this repo is public - a key baked into committed
+// source would be visible to anyone on GitHub, defeating the point.
+def localProps = new Properties()
+def localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localProps.load(new FileInputStream(localPropsFile))
+}
+def backupKey = localProps.getProperty('BACKUP_KEY', '')
+
 android {
     namespace "com.khaled.backupapp"
     compileSdkVersion 34
@@ -9,6 +20,10 @@ android {
         targetSdkVersion 34
         versionCode 1
         versionName "1.0"
+        buildConfigField "String", "BACKUP_KEY", "\"${backupKey}\""
+    }
+    buildFeatures {
+        buildConfig true
     }
     buildTypes {
         release {
