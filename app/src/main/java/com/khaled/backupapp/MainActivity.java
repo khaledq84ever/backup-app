@@ -24,11 +24,15 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.FileProvider;
 import androidx.documentfile.provider.DocumentFile;
+
+import org.json.JSONObject;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -61,6 +65,7 @@ public class MainActivity extends Activity {
     static final int REQ_PERMS = 100;
     static final int REQ_PICK_FOLDER = 101;
     static final int REQ_ALL_FILES_ACCESS = 102;
+    static final int REQ_INSTALL_UNKNOWN_SOURCES = 103;
 
     // Top-level folders under external storage that are either protected
     // (Android/data, Android/obb — unreadable even with All-Files-Access
@@ -81,6 +86,7 @@ public class MainActivity extends Activity {
     // overlapping duplicate job - single-thread executor makes them safe to
     // run back-to-back, but not useful to run at the same time by accident.
     final AtomicInteger inFlight = new AtomicInteger(0);
+    File pendingApk;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -95,6 +101,7 @@ public class MainActivity extends Activity {
             log("[WARN] No BACKUP_KEY built into this APK - set BACKUP_KEY in local.properties " +
                     "and rebuild, or an authenticated server will reject every upload with 401.");
         }
+        Executors.newSingleThreadExecutor().execute(this::checkForUpdate);
     }
 
     // ── UI ──────────────────────────────────────────────────────
@@ -249,6 +256,82 @@ public class MainActivity extends Activity {
             });
             backupAllFiles();
         }
+    }
+
+    // ── auto-update ────────────────────────────────────────────
+    void checkForUpdate() {
+        try {
+            long current = getPackageManager().getPackageInfo(getPackageName(), 0)
+                    .getLongVersionCode();
+            URL url = new URL(SERVER_URL + "/api/version");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            StringBuilder body = new StringBuilder();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) != -1) body.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+            } finally {
+                conn.disconnect();
+            }
+            JSONObject v = new JSONObject(body.toString());
+            long latest = v.getLong("versionCode");
+            String apkUrl = v.getString("apkUrl");
+            String versionName = v.optString("versionName", "");
+            if (latest > current) {
+                log("Update: v" + versionName + " available, downloading...");
+                downloadAndInstallUpdate(apkUrl, versionName);
+            } else {
+                log("Update: up to date (v" + current + ")");
+            }
+        } catch (Exception e) {
+            Log.w("BackupApp", "update check failed", e);
+        }
+    }
+
+    void downloadAndInstallUpdate(String apkUrl, String versionName) {
+        HttpURLConnection conn = null;
+        try {
+            File dir = new File(getExternalFilesDir(null), "updates");
+            dir.mkdirs();
+            File apk = new File(dir, "update.apk");
+
+            URL url = new URL(SERVER_URL + apkUrl);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(60000);
+            try (InputStream in = conn.getInputStream();
+                 FileOutputStream out = new FileOutputStream(apk)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            }
+
+            log("Update: v" + versionName + " downloaded, opening installer...");
+            pendingApk = apk;
+            runOnUiThread(() -> installApk(apk));
+        } catch (Exception e) {
+            Log.w("BackupApp", "update download failed", e);
+            log("Update: download failed");
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    void installApk(File apk) {
+        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            toast("Allow \"Install unknown apps\" for Backup App to auto-update.");
+            Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+            startActivityForResult(settings, REQ_INSTALL_UNKNOWN_SOURCES);
+            return;
+        }
+        Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
     }
 
     // ── permissions ─────────────────────────────────────────────
@@ -440,6 +523,12 @@ public class MainActivity extends Activity {
             runBackupTask(() -> backupFolder(treeUri));
         } else if (requestCode == REQ_ALL_FILES_ACCESS) {
             log("All files access: " + (hasAllFilesAccess() ? "granted, tap \"All Device Folders\" again" : "still not granted"));
+        } else if (requestCode == REQ_INSTALL_UNKNOWN_SOURCES) {
+            if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) {
+                installApk(pendingApk);
+            } else {
+                log("Update: install permission not granted.");
+            }
         }
     }
 

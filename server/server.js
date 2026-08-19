@@ -8,6 +8,7 @@ const path = require('path');
 const PORT = process.env.PORT || 4425;
 const DATA_DIR = path.join(__dirname, 'data');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const VERSION_FILE = path.join(__dirname, 'version.json');
 const BACKUP_KEY = process.env.BACKUP_APP_KEY;
 
 // Every endpoint here reads or writes personal data (SMS, contacts, photos,
@@ -137,6 +138,20 @@ app.get('/api/status/:device', requireKey, (req, res) => {
   const status = {};
   for (const c of categories) status[c] = dirStats(path.join(base, c));
   res.json({ ok: true, device, status });
+});
+
+// Auto-update: the Android app polls this on launch, unauthenticated (same
+// trust level as the public APK download) so an old build can always find
+// out about a new one even before it has a working key. Bump version.json
+// (and drop the new APK at server/public/backupapp.apk) to ship an update —
+// no server restart needed, it's read fresh on every request.
+app.get('/api/version', (req, res) => {
+  try {
+    const v = JSON.parse(fs.readFileSync(VERSION_FILE, 'utf8'));
+    res.json(v);
+  } catch (e) {
+    res.status(500).json({ error: 'version.json missing or invalid' });
+  }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
