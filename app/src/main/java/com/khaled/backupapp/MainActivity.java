@@ -41,7 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends Activity {
 
@@ -71,11 +71,16 @@ public class MainActivity extends Activity {
     TextView logView;
     ScrollView logScroll;
     TextView statusView;
-    Button backupEverythingBtn;
+    final List<Button> actionButtons = new ArrayList<>();
     SharedPreferences prefs;
     ExecutorService uploader = Executors.newSingleThreadExecutor();
     String deviceId;
-    final AtomicBoolean backupRunning = new AtomicBoolean(false);
+    // Counts backup jobs queued-or-running on `uploader`. Every button funnels
+    // through runBackupTask() so tapping any of them while another is in
+    // flight is a no-op (buttons disabled) instead of silently queuing an
+    // overlapping duplicate job - single-thread executor makes them safe to
+    // run back-to-back, but not useful to run at the same time by accident.
+    final AtomicInteger inFlight = new AtomicInteger(0);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -121,14 +126,13 @@ public class MainActivity extends Activity {
         refreshStatus();
         root.addView(statusView);
 
-        backupEverythingBtn = actionButton("Backup Everything", v -> backupEverything());
-        root.addView(backupEverythingBtn);
-        root.addView(actionButton("Photos && Videos", v -> uploader.execute(this::backupMedia)));
-        root.addView(actionButton("Contacts", v -> uploader.execute(this::backupContacts)));
-        root.addView(actionButton("SMS", v -> uploader.execute(this::backupSms)));
-        root.addView(actionButton("Installed Apps", v -> uploader.execute(this::backupApps)));
-        root.addView(actionButton("All Device Folders", v -> backupAllFiles()));
-        root.addView(actionButton("Pick One Folder (fallback)", v -> pickFolder()));
+        addActionButton(root, "Backup Everything", v -> backupEverything());
+        addActionButton(root, "Photos && Videos", v -> runBackupTask(this::backupMedia));
+        addActionButton(root, "Contacts", v -> runBackupTask(this::backupContacts));
+        addActionButton(root, "SMS", v -> runBackupTask(this::backupSms));
+        addActionButton(root, "Installed Apps", v -> runBackupTask(this::backupApps));
+        addActionButton(root, "All Device Folders", v -> backupAllFiles());
+        addActionButton(root, "Pick One Folder (fallback)", v -> pickFolder());
 
         TextView logLabel = new TextView(this);
         logLabel.setText("Log");
@@ -153,7 +157,7 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
-    Button actionButton(String label, View.OnClickListener onClick) {
+    void addActionButton(LinearLayout root, String label, View.OnClickListener onClick) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
@@ -164,7 +168,30 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(8);
         b.setLayoutParams(lp);
-        return b;
+        actionButtons.add(b);
+        root.addView(b);
+    }
+
+    void setButtonsEnabled(boolean enabled) {
+        for (Button b : actionButtons) b.setEnabled(enabled);
+    }
+
+    // Runs `task` on the single-thread uploader executor, disabling every
+    // action button until every currently queued-or-running task (this one
+    // and any already ahead of it) has finished.
+    void runBackupTask(Runnable task) {
+        if (inFlight.getAndIncrement() == 0) {
+            runOnUiThread(() -> setButtonsEnabled(false));
+        }
+        uploader.execute(() -> {
+            try {
+                task.run();
+            } finally {
+                if (inFlight.decrementAndGet() == 0) {
+                    runOnUiThread(() -> setButtonsEnabled(true));
+                }
+            }
+        });
     }
 
     int dp(int v) {
@@ -202,34 +229,26 @@ public class MainActivity extends Activity {
     }
 
     void backupEverything() {
-        // uploader is a single-thread executor, so a task submitted here always
-        // runs after every task already queued - queuing this as the last step
-        // of each branch below reliably marks the whole run finished exactly
-        // once, regardless of whether the all-files branch had permission yet.
-        if (!backupRunning.compareAndSet(false, true)) {
-            toast("A backup is already running.");
-            return;
-        }
-        runOnUiThread(() -> backupEverythingBtn.setEnabled(false));
-
-        uploader.execute(() -> {
-            backupContacts();
-            backupSms();
-            backupMedia();
-            backupApps();
-        });
         if (hasAllFilesAccess()) {
-            uploader.execute(this::backupAllFilesNow);
-            uploader.execute(this::finishBackupEverything);
+            runBackupTask(() -> {
+                backupContacts();
+                backupSms();
+                backupMedia();
+                backupApps();
+                backupAllFilesNow();
+            });
         } else {
-            uploader.execute(this::finishBackupEverything);
+            // No all-files permission yet: run everything else now, and kick
+            // off the permission request - the user taps "All Device Folders"
+            // (or "Backup Everything" again) once it's granted.
+            runBackupTask(() -> {
+                backupContacts();
+                backupSms();
+                backupMedia();
+                backupApps();
+            });
             backupAllFiles();
         }
-    }
-
-    void finishBackupEverything() {
-        backupRunning.set(false);
-        runOnUiThread(() -> backupEverythingBtn.setEnabled(true));
     }
 
     // ── permissions ─────────────────────────────────────────────
@@ -418,7 +437,7 @@ public class MainActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(treeUri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) {}
-            uploader.execute(() -> backupFolder(treeUri));
+            runBackupTask(() -> backupFolder(treeUri));
         } else if (requestCode == REQ_ALL_FILES_ACCESS) {
             log("All files access: " + (hasAllFilesAccess() ? "granted, tap \"All Device Folders\" again" : "still not granted"));
         }
@@ -462,7 +481,7 @@ public class MainActivity extends Activity {
             }
             return;
         }
-        uploader.execute(this::backupAllFilesNow);
+        runBackupTask(this::backupAllFilesNow);
     }
 
     void backupAllFilesNow() {

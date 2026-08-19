@@ -22,6 +22,17 @@ if (!BACKUP_KEY) {
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
+// One request crashing the whole process (as the destination() bug above
+// did) takes down backups for every device, not just the bad request -
+// log and keep serving instead of dying on an exception we didn't
+// anticipate in testing.
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException (server stays up):', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('unhandledRejection (server stays up):', err);
+});
+
 const app = express();
 app.use(express.static(PUBLIC_DIR));
 
@@ -47,6 +58,12 @@ function safeRelPath(rel) {
 }
 
 const storage = multer.diskStorage({
+  // Every branch here must call cb(err) instead of throwing: multer invokes
+  // this from inside a busboy stream event, so a synchronous throw (as
+  // happened here before with path.dirname(null) on a rejected relpath)
+  // becomes an uncaught exception that kills the whole process, not just
+  // this request - confirmed by actually sending a traversal relpath and
+  // watching the server die.
   destination: (req, file, cb) => {
     const device = req.body.device;
     const category = req.body.category;
@@ -54,8 +71,15 @@ const storage = multer.diskStorage({
       return cb(new Error('bad device/category'));
     }
     const rel = safeRelPath(req.body.relpath || file.originalname || 'file');
+    if (!rel) {
+      return cb(new Error('bad relpath'));
+    }
     const dir = path.join(DATA_DIR, device, category, path.dirname(rel));
-    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (e) {
+      return cb(e);
+    }
     req._destDir = dir;
     req._destName = path.basename(rel);
     cb(null, dir);
