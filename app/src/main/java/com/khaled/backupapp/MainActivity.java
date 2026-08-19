@@ -118,34 +118,67 @@ public class MainActivity extends Activity {
     }
 
     // ── UI ──────────────────────────────────────────────────────
+    android.graphics.drawable.GradientDrawable pill(int color, int radiusDp) {
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radiusDp));
+        return d;
+    }
+
+    android.graphics.drawable.GradientDrawable outlinePill(int strokeColor, int radiusDp) {
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setColor(0x00000000);
+        d.setStroke(dp(1), strokeColor);
+        d.setCornerRadius(dp(radiusDp));
+        return d;
+    }
+
     void buildUi() {
+        ScrollView pageScroll = new ScrollView(this);
+        pageScroll.setBackgroundColor(BG);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BG);
         int pad = dp(20);
         root.setPadding(pad, dp(40), pad, pad);
+        pageScroll.addView(root, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
 
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView titleIcon = new TextView(this);
+        titleIcon.setText("💾");
+        titleIcon.setTextSize(28);
+        titleIcon.setPadding(0, 0, dp(8), 0);
+        titleRow.addView(titleIcon);
         TextView title = new TextView(this);
         title.setText("Backup App");
         title.setTextColor(TEXT);
         title.setTextSize(26);
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
-        root.addView(title);
+        titleRow.addView(title);
+        root.addView(titleRow);
 
         TextView subtitle = new TextView(this);
         subtitle.setText("Full device backup — نسخ احتياطي كامل للجهاز");
         subtitle.setTextColor(SUB);
         subtitle.setTextSize(13);
-        subtitle.setPadding(0, dp(4), 0, dp(16));
+        subtitle.setPadding(0, dp(4), 0, dp(20));
         root.addView(subtitle);
 
         // ── destination toggle: WiFi server vs. this device (USB → PC) ──
         TextView destTitle = new TextView(this);
-        destTitle.setText("Save to / احفظ في:");
+        destTitle.setText("SAVE TO  ·  احفظ في");
         destTitle.setTextColor(SUB);
-        destTitle.setTextSize(12);
-        destTitle.setPadding(0, 0, 0, dp(6));
+        destTitle.setTextSize(11);
+        destTitle.setTypeface(destTitle.getTypeface(), android.graphics.Typeface.BOLD);
+        destTitle.setPadding(dp(2), 0, 0, dp(8));
         root.addView(destTitle);
+
+        LinearLayout destCard = new LinearLayout(this);
+        destCard.setOrientation(LinearLayout.VERTICAL);
+        destCard.setBackground(pill(CARD, 14));
+        destCard.setPadding(dp(10), dp(10), dp(10), dp(10));
 
         LinearLayout destRow = new LinearLayout(this);
         destRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -153,6 +186,7 @@ public class MainActivity extends Activity {
         destServerBtn.setText("☁ Server (WiFi)");
         destServerBtn.setAllCaps(false);
         destServerBtn.setTextSize(13);
+        destServerBtn.setPadding(dp(8), dp(10), dp(8), dp(10));
         destServerBtn.setOnClickListener(v -> setLocalMode(false));
         LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         lp1.rightMargin = dp(6);
@@ -160,70 +194,141 @@ public class MainActivity extends Activity {
         destRow.addView(destServerBtn);
 
         destUsbBtn = new Button(this);
-        destUsbBtn.setText("🔌 This device (USB → PC)");
+        destUsbBtn.setText("🔌 This Device (USB → PC)");
         destUsbBtn.setAllCaps(false);
         destUsbBtn.setTextSize(13);
+        destUsbBtn.setPadding(dp(8), dp(10), dp(8), dp(10));
         destUsbBtn.setOnClickListener(v -> setLocalMode(true));
         LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         destUsbBtn.setLayoutParams(lp2);
         destRow.addView(destUsbBtn);
-        root.addView(destRow);
+        destCard.addView(destRow);
 
         destLabel = new TextView(this);
         destLabel.setTextColor(SUB);
         destLabel.setTextSize(11);
-        destLabel.setPadding(0, dp(6), 0, dp(16));
-        root.addView(destLabel);
+        destLabel.setPadding(dp(2), dp(8), dp(2), 0);
+        destCard.addView(destLabel);
+        root.addView(destCard);
         updateDestUi();
 
         statusView = new TextView(this);
         statusView.setTextColor(SUB);
         statusView.setTextSize(12);
-        statusView.setPadding(0, 0, 0, dp(16));
+        statusView.setBackground(pill(CARD, 14));
+        statusView.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        statusLp.topMargin = dp(12);
+        statusLp.bottomMargin = dp(20);
+        statusView.setLayoutParams(statusLp);
         refreshStatus();
         root.addView(statusView);
 
-        addActionButton(root, "Backup Everything", v -> backupEverything());
-        addActionButton(root, "Photos && Videos", v -> runBackupTask(this::backupMedia));
-        addActionButton(root, "Contacts", v -> runBackupTask(this::backupContacts));
-        addActionButton(root, "SMS", v -> runBackupTask(this::backupSms));
-        addActionButton(root, "Installed Apps", v -> runBackupTask(this::backupApps));
-        addActionButton(root, "All Device Folders", v -> backupAllFiles());
-        addActionButton(root, "Pick One Folder (fallback)", v -> pickFolder());
+        // Primary call-to-action, full width, unmissable.
+        addPrimaryButton(root, "⚡ Backup Everything  ·  انسخ كل شي", v -> backupEverything());
+
+        // Everything else in a compact 2-column grid — icons carry most of
+        // the scanning, EN+AR only where it fits.
+        addButtonGrid(root, new Object[][]{
+                {"🖼️ Photos && Videos", (View.OnClickListener) v -> runBackupTask(this::backupMedia)},
+                {"👤 Contacts", (View.OnClickListener) v -> runBackupTask(this::backupContacts)},
+                {"💬 SMS", (View.OnClickListener) v -> runBackupTask(this::backupSms)},
+                {"📱 Installed Apps", (View.OnClickListener) v -> runBackupTask(this::backupApps)},
+                {"📁 All Device Folders", (View.OnClickListener) v -> backupAllFiles()},
+        });
+
+        addGhostButton(root, "Pick one folder (fallback) / اختر مجلد", v -> pickFolder());
 
         TextView logLabel = new TextView(this);
-        logLabel.setText("Log");
+        logLabel.setText("LOG  ·  السجل");
         logLabel.setTextColor(SUB);
-        logLabel.setTextSize(12);
-        logLabel.setPadding(0, dp(16), 0, dp(6));
+        logLabel.setTextSize(11);
+        logLabel.setTypeface(logLabel.getTypeface(), android.graphics.Typeface.BOLD);
+        logLabel.setPadding(dp(2), dp(20), 0, dp(8));
         root.addView(logLabel);
 
         logView = new TextView(this);
         logView.setTextColor(TEXT);
         logView.setTextSize(12);
         logView.setTextIsSelectable(true);
+        logView.setText("", TextView.BufferType.SPANNABLE);
 
         logScroll = new ScrollView(this);
-        logScroll.setBackgroundColor(CARD);
+        logScroll.setBackground(pill(CARD, 14));
         logScroll.setPadding(dp(12), dp(12), dp(12), dp(12));
         logScroll.addView(logView);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1);
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(220));
         root.addView(logScroll, lp);
 
-        setContentView(root);
+        setContentView(pageScroll);
     }
 
-    void addActionButton(LinearLayout root, String label, View.OnClickListener onClick) {
+    void addPrimaryButton(LinearLayout root, String label, View.OnClickListener onClick) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(BG);
-        b.setBackgroundColor(ACCENT);
+        b.setTypeface(b.getTypeface(), android.graphics.Typeface.BOLD);
+        b.setTextSize(15);
+        b.setBackground(pill(ACCENT, 14));
+        b.setPadding(dp(16), dp(16), dp(16), dp(16));
         b.setOnClickListener(onClick);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(8);
+        lp.bottomMargin = dp(14);
+        b.setLayoutParams(lp);
+        actionButtons.add(b);
+        root.addView(b);
+    }
+
+    // Two-per-row grid of secondary actions — compact, icon-led.
+    void addButtonGrid(LinearLayout root, Object[][] items) {
+        for (int i = 0; i < items.length; i += 2) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            rowLp.topMargin = dp(8);
+            row.setLayoutParams(rowLp);
+            row.addView(gridButton((String) items[i][0], (View.OnClickListener) items[i][1], i + 1 < items.length));
+            if (i + 1 < items.length) {
+                row.addView(gridButton((String) items[i + 1][0], (View.OnClickListener) items[i + 1][1], false));
+            }
+            root.addView(row);
+        }
+    }
+
+    Button gridButton(String label, View.OnClickListener onClick, boolean addRightMargin) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextColor(TEXT);
+        b.setTextSize(13);
+        b.setBackground(pill(CARD, 12));
+        b.setPadding(dp(10), dp(14), dp(10), dp(14));
+        b.setOnClickListener(onClick);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        if (addRightMargin) lp.rightMargin = dp(8);
+        b.setLayoutParams(lp);
+        actionButtons.add(b);
+        return b;
+    }
+
+    // Low-emphasis outline button for the "fallback" action — present, not competing.
+    void addGhostButton(LinearLayout root, String label, View.OnClickListener onClick) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextColor(SUB);
+        b.setTextSize(12);
+        b.setBackground(outlinePill(DIVIDER, 12));
+        b.setPadding(dp(10), dp(10), dp(10), dp(10));
+        b.setOnClickListener(onClick);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(10);
         b.setLayoutParams(lp);
         actionButtons.add(b);
         root.addView(b);
@@ -295,10 +400,23 @@ public class MainActivity extends Activity {
     }
 
     void log(String s) {
+        int color = logColor(s);
+        android.text.SpannableString line = new android.text.SpannableString(s + "\n");
+        if (color != TEXT) {
+            line.setSpan(new android.text.style.ForegroundColorSpan(color), 0, s.length(), 0);
+        }
         runOnUiThread(() -> {
-            logView.append(s + "\n");
+            logView.append(line);
             logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
         });
+    }
+
+    int logColor(String s) {
+        String low = s.toLowerCase(Locale.US);
+        if (low.contains("failed") || low.contains("[warn]") || low.contains("not granted")) return ERR;
+        if (low.contains(" ok") || low.contains("uploaded") || low.contains("=ok")
+                || low.contains("up to date") || low.contains("granted")) return OK;
+        return TEXT;
     }
 
     void toast(String s) {
