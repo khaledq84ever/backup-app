@@ -67,19 +67,31 @@ public class MainActivity extends Activity {
     static final int REQ_ALL_FILES_ACCESS = 102;
     static final int REQ_INSTALL_UNKNOWN_SOURCES = 103;
 
+    static final String LOCAL_BACKUP_DIRNAME = "BackupApp";
+
     // Top-level folders under external storage that are either protected
     // (Android/data, Android/obb — unreadable even with All-Files-Access
-    // on API 30+) or already covered by the MediaStore photos/videos backup.
+    // on API 30+), already covered by the MediaStore photos/videos backup,
+    // or (BackupApp) this app's own local-mode output — walking into that
+    // one while writing into it would recurse forever, copying its own
+    // output back into itself.
     static final java.util.Set<String> SKIP_TOP_LEVEL = new java.util.HashSet<>(java.util.Arrays.asList(
-            "Android", "DCIM", "Pictures", "Movies"));
+            "Android", "DCIM", "Pictures", "Movies", LOCAL_BACKUP_DIRNAME));
 
     TextView logView;
     ScrollView logScroll;
     TextView statusView;
+    TextView destLabel;
+    Button destServerBtn, destUsbBtn;
     final List<Button> actionButtons = new ArrayList<>();
     SharedPreferences prefs;
     ExecutorService uploader = Executors.newSingleThreadExecutor();
     String deviceId;
+    // Where a backup goes: WiFi upload to SERVER_URL, or written straight onto
+    // this device's shared storage so it shows up in a plain file browser the
+    // moment the phone is plugged into a PC over USB (MTP) - no server, no
+    // Wi-Fi, no account. Toggle persists across launches.
+    boolean localMode;
     // Counts backup jobs queued-or-running on `uploader`. Every button funnels
     // through runBackupTask() so tapping any of them while another is in
     // flight is a no-op (buttons disabled) instead of silently queuing an
@@ -94,6 +106,7 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences("backupapp", MODE_PRIVATE);
         deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
         if (deviceId == null) deviceId = "unknown-device";
+        localMode = prefs.getBoolean("local_mode", false);
 
         buildUi();
         requestPerms();
@@ -120,11 +133,48 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Full device backup → " + SERVER_URL + "  تطبيق النسخ الاحتياطي");
+        subtitle.setText("Full device backup — نسخ احتياطي كامل للجهاز");
         subtitle.setTextColor(SUB);
         subtitle.setTextSize(13);
-        subtitle.setPadding(0, dp(4), 0, dp(20));
+        subtitle.setPadding(0, dp(4), 0, dp(16));
         root.addView(subtitle);
+
+        // ── destination toggle: WiFi server vs. this device (USB → PC) ──
+        TextView destTitle = new TextView(this);
+        destTitle.setText("Save to / احفظ في:");
+        destTitle.setTextColor(SUB);
+        destTitle.setTextSize(12);
+        destTitle.setPadding(0, 0, 0, dp(6));
+        root.addView(destTitle);
+
+        LinearLayout destRow = new LinearLayout(this);
+        destRow.setOrientation(LinearLayout.HORIZONTAL);
+        destServerBtn = new Button(this);
+        destServerBtn.setText("☁ Server (WiFi)");
+        destServerBtn.setAllCaps(false);
+        destServerBtn.setTextSize(13);
+        destServerBtn.setOnClickListener(v -> setLocalMode(false));
+        LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        lp1.rightMargin = dp(6);
+        destServerBtn.setLayoutParams(lp1);
+        destRow.addView(destServerBtn);
+
+        destUsbBtn = new Button(this);
+        destUsbBtn.setText("🔌 This device (USB → PC)");
+        destUsbBtn.setAllCaps(false);
+        destUsbBtn.setTextSize(13);
+        destUsbBtn.setOnClickListener(v -> setLocalMode(true));
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        destUsbBtn.setLayoutParams(lp2);
+        destRow.addView(destUsbBtn);
+        root.addView(destRow);
+
+        destLabel = new TextView(this);
+        destLabel.setTextColor(SUB);
+        destLabel.setTextSize(11);
+        destLabel.setPadding(0, dp(6), 0, dp(16));
+        root.addView(destLabel);
+        updateDestUi();
 
         statusView = new TextView(this);
         statusView.setTextColor(SUB);
@@ -181,6 +231,26 @@ public class MainActivity extends Activity {
 
     void setButtonsEnabled(boolean enabled) {
         for (Button b : actionButtons) b.setEnabled(enabled);
+    }
+
+    void setLocalMode(boolean local) {
+        localMode = local;
+        prefs.edit().putBoolean("local_mode", local).apply();
+        updateDestUi();
+        toast(local
+                ? "Backups now save to this phone's storage — plug in USB to copy them to your PC. / بتنحفظ بجهازك، وصّل USB وانسخها للكمبيوتر"
+                : "Backups now upload over WiFi to the server. / بترفع عبر الواي فاي للسيرفر");
+    }
+
+    void updateDestUi() {
+        if (destServerBtn == null) return; // called before buildUi finishes
+        destServerBtn.setBackgroundColor(localMode ? CARD : ACCENT);
+        destServerBtn.setTextColor(localMode ? SUB : BG);
+        destUsbBtn.setBackgroundColor(localMode ? ACCENT : CARD);
+        destUsbBtn.setTextColor(localMode ? BG : SUB);
+        destLabel.setText(localMode
+                ? "Files land in: " + localBackupRoot().getPath() + "\nPlug in a USB cable and open that folder on your PC (no WiFi needed). / وصّل كيبل USB وافتح هذا المجلد من الكمبيوتر"
+                : "Uploads to " + SERVER_URL + " over WiFi. / يرفع عبر الواي فاي للسيرفر");
     }
 
     // Runs `task` on the single-thread uploader executor, disabling every
@@ -411,7 +481,7 @@ public class MainActivity extends Activity {
             c.close();
         }
         json.append("\n]\n");
-        boolean ok = uploadBytes("contacts", "contacts.json",
+        boolean ok = storeBytes("contacts", "contacts.json",
                 json.toString().getBytes(StandardCharsets.UTF_8), "application/json");
         if (ok) {
             prefs.edit().putLong("last_contacts", System.currentTimeMillis()).apply();
@@ -448,7 +518,7 @@ public class MainActivity extends Activity {
             c.close();
         }
         json.append("\n]\n");
-        boolean ok = uploadBytes("sms", "sms.json",
+        boolean ok = storeBytes("sms", "sms.json",
                 json.toString().getBytes(StandardCharsets.UTF_8), "application/json");
         if (ok) {
             prefs.edit().putLong("last_sms", System.currentTimeMillis()).apply();
@@ -491,7 +561,7 @@ public class MainActivity extends Activity {
                 Uri fileUri = Uri.withAppendedPath(collection, String.valueOf(id));
                 try (InputStream in = getContentResolver().openInputStream(fileUri)) {
                     if (in == null) continue;
-                    boolean up = uploadStream(category, name, in, "application/octet-stream");
+                    boolean up = storeStream(category, name, in, "application/octet-stream");
                     if (up) ok++;
                     if (i % 10 == 0) log(category + ": " + i + "/" + total);
                 } catch (Exception e) {
@@ -597,7 +667,7 @@ public class MainActivity extends Activity {
         } else {
             counters[1]++;
             try (InputStream in = new FileInputStream(f)) {
-                boolean ok = uploadStream("files", rel, in, "application/octet-stream");
+                boolean ok = storeStream("files", rel, in, "application/octet-stream");
                 if (ok) counters[0]++;
                 if (counters[1] % 20 == 0) log("files: " + counters[0] + "/" + counters[1]);
             } catch (Exception e) {
@@ -635,7 +705,7 @@ public class MainActivity extends Activity {
             // Best-effort: back up the installed APK for user (non-system) apps.
             if (!isSystem && ai.sourceDir != null) {
                 try (InputStream in = new FileInputStream(ai.sourceDir)) {
-                    boolean ok = uploadStream("apps", ai.packageName + ".apk", in, "application/vnd.android.package-archive");
+                    boolean ok = storeStream("apps", ai.packageName + ".apk", in, "application/vnd.android.package-archive");
                     if (ok) apkOk++;
                 } catch (Exception e) {
                     Log.w("BackupApp", "apk backup skipped: " + ai.packageName, e);
@@ -643,7 +713,7 @@ public class MainActivity extends Activity {
             }
         }
         json.append("\n]\n");
-        boolean ok = uploadBytes("apps", "apps.json",
+        boolean ok = storeBytes("apps", "apps.json",
                 json.toString().getBytes(StandardCharsets.UTF_8), "application/json");
         if (ok) {
             prefs.edit().putLong("last_apps", System.currentTimeMillis()).apply();
@@ -655,6 +725,11 @@ public class MainActivity extends Activity {
     void walkAndUpload(DocumentFile dir, String relPrefix, int[] counters) {
         DocumentFile[] children = dir.listFiles();
         for (DocumentFile f : children) {
+            // Same self-recursion guard as backupAllFilesNow(): if the user
+            // picked a folder that happens to contain this app's own
+            // local-mode output (e.g. the whole sdcard root), don't copy it
+            // back into itself in local mode.
+            if (relPrefix.isEmpty() && localMode && LOCAL_BACKUP_DIRNAME.equals(f.getName())) continue;
             String rel = relPrefix.isEmpty() ? f.getName() : relPrefix + "/" + f.getName();
             if (f.isDirectory()) {
                 walkAndUpload(f, rel, counters);
@@ -662,7 +737,7 @@ public class MainActivity extends Activity {
                 counters[1]++;
                 try (InputStream in = getContentResolver().openInputStream(f.getUri())) {
                     if (in == null) continue;
-                    boolean ok = uploadStream("files", rel, in,
+                    boolean ok = storeStream("files", rel, in,
                             f.getType() != null ? f.getType() : "application/octet-stream");
                     if (ok) counters[0]++;
                     if (counters[1] % 10 == 0) log("files: " + counters[0] + "/" + counters[1]);
@@ -673,7 +748,66 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ── upload (multipart/form-data, no external deps) ────────
+    // ── store (routes to WiFi upload or local-device write) ────
+    File localBackupRoot() {
+        return new File(Environment.getExternalStorageDirectory(), LOCAL_BACKUP_DIRNAME);
+    }
+
+    boolean storeBytes(String category, String relPath, byte[] bytes, String contentType) {
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(bytes)) {
+            return storeStream(category, relPath, in, contentType);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    boolean storeStream(String category, String relPath, InputStream in, String contentType) {
+        return localMode ? saveLocal(category, relPath, in) : uploadStream(category, relPath, in, contentType);
+    }
+
+    // Writes straight onto this device's own shared storage under
+    // /storage/emulated/0/BackupApp/<category>/<relPath> - MTP already
+    // exposes that path the instant a USB cable is plugged in, so this needs
+    // no server, no network, and works with the phone fully offline.
+    boolean saveLocal(String category, String relPath, InputStream in) {
+        try {
+            File dest = safeLocalFile(category, relPath);
+            if (dest == null) return false;
+            File parent = dest.getParentFile();
+            if (parent != null) parent.mkdirs();
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(dest))) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            }
+            return true;
+        } catch (Exception e) {
+            Log.w("BackupApp", "local save failed: " + category + "/" + relPath, e);
+            return false;
+        }
+    }
+
+    // relPath ultimately comes from real filenames (MediaStore/DocumentFile/
+    // package names) rather than untrusted network input, but a crafted or
+    // unusual name (e.g. containing "..") could still resolve outside the
+    // backup root - resolve and verify containment before ever writing.
+    File safeLocalFile(String category, String relPath) {
+        File root = localBackupRoot();
+        File dest = new File(new File(root, category), relPath);
+        try {
+            String rootPath = root.getCanonicalPath() + File.separator;
+            String destPath = dest.getCanonicalPath();
+            if (!(destPath + File.separator).startsWith(rootPath) && !destPath.equals(root.getCanonicalPath())) {
+                Log.w("BackupApp", "rejected path escaping backup root: " + relPath);
+                return null;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        return dest;
+    }
+
+    // ── network upload (multipart/form-data, no external deps) ─
     static final String BOUNDARY = "----BackupAppBoundary7a1c9";
 
     boolean uploadBytes(String category, String relPath, byte[] bytes, String contentType) {
