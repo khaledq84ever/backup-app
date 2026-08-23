@@ -58,6 +58,42 @@ function safeRelPath(rel) {
   return norm;
 }
 
+// Per-device record of what's already been uploaded (category/relpath ->
+// the app's own versionTag string, e.g. "size:mtime" or a CRC32 tag), so a
+// device that lost its local manifest.properties (reinstall, "clear
+// storage") can ask the server what it already has instead of re-uploading
+// every file from scratch. Cached in memory per device; writes are plain
+// synchronous fs calls, which is safe here because nothing else runs
+// between the read-modify and the write within a single synchronous
+// JS callback - concurrent uploads never interleave mid-update.
+const manifestCache = new Map(); // device -> { "category/relpath": versionTag }
+
+function manifestPath(device) {
+  return path.join(DATA_DIR, device, '.manifest.json');
+}
+
+function loadDeviceManifest(device) {
+  if (manifestCache.has(device)) return manifestCache.get(device);
+  let data = {};
+  try {
+    data = JSON.parse(fs.readFileSync(manifestPath(device), 'utf8'));
+  } catch (e) {
+    // missing or invalid - start fresh, nothing to reconcile yet
+  }
+  manifestCache.set(device, data);
+  return data;
+}
+
+function updateDeviceManifest(device, category, relPath, versionTag) {
+  const data = loadDeviceManifest(device);
+  data[`${category}/${relPath}`] = versionTag;
+  try {
+    fs.writeFileSync(manifestPath(device), JSON.stringify(data));
+  } catch (e) {
+    console.error('manifest write failed:', e.message);
+  }
+}
+
 const storage = multer.diskStorage({
   // Every branch here must call cb(err) instead of throwing: multer invokes
   // this from inside a busboy stream event, so a synchronous throw (as
@@ -83,6 +119,7 @@ const storage = multer.diskStorage({
     }
     req._destDir = dir;
     req._destName = path.basename(rel);
+    req._destRel = rel;
     cb(null, dir);
   },
   filename: (req, file, cb) => cb(null, req._destName),
@@ -120,8 +157,21 @@ app.post('/api/upload', requireKey, checkDiskSpace, (req, res) => {
       return res.status(400).json({ ok: false, error: err.message });
     }
     if (!req.file) return res.status(400).json({ ok: false, error: 'no file' });
+    const versionTag = req.body.versiontag;
+    if (typeof versionTag === 'string' && versionTag.length > 0 && versionTag.length < 200) {
+      updateDeviceManifest(req.body.device, req.body.category, req._destRel, versionTag);
+    }
     res.json({ ok: true, path: `${req.body.device}/${req.body.category}/${req.body.relpath}` });
   });
+});
+
+// Lets a device that lost its local manifest (reinstall, cleared app data)
+// find out what the server already has for it, so it can skip re-uploading
+// files it's already sent instead of starting a full backup from zero.
+app.get('/api/manifest/:device', requireKey, (req, res) => {
+  const device = req.params.device;
+  if (!safeSegment(device)) return res.status(400).json({ ok: false, error: 'bad device' });
+  res.json({ ok: true, manifest: loadDeviceManifest(device) });
 });
 
 function dirStats(dir) {

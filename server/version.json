@@ -1,6 +1,6 @@
 {
-  "versionCode": 10,
-  "versionName": "1.9",
+  "versionCode": 11,
+  "versionName": "1.10",
   "apkUrl": "/backupapp.apk",
-  "notes": "UI: removed emoji icons from the title and every button (title, destination toggle, primary button, action grid) - text-only labels now. Trimmed text sizes across the board so long labels like \"This Device (USB → PC)\" fit cleanly on one line in their half-width slot."
+  "notes": "Resume support: the server now remembers what each device has already uploaded (per-device manifest, updated on every upload), and the app pulls that down once at launch to fill in any gaps in its own local skip-list. So even after a reinstall or cleared app data, re-running a backup won't re-upload files the server already has - it picks up from what's actually missing."
 }

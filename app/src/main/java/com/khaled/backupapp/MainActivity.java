@@ -166,6 +166,7 @@ public class MainActivity extends Activity {
         localMode = prefs.getBoolean("local_mode", false);
         manifestFile = new File(getFilesDir(), "manifest.properties");
         loadManifest();
+        Executors.newSingleThreadExecutor().execute(this::fetchServerManifest);
 
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "BackupApp:backup");
@@ -589,6 +590,47 @@ public class MainActivity extends Activity {
         startActivity(intent);
     }
 
+    // A reinstall or "clear storage" wipes manifest.properties even though
+    // the server still has every file from before - without this, the next
+    // backup would think everything is new and re-upload the whole device
+    // again. Pull down what the server actually has for this deviceId and
+    // fold in any entry the local manifest doesn't already know (never
+    // overwrite a local entry - it's already trustworthy, this only fills
+    // gaps). Runs once at launch, silently no-ops if offline/first-run.
+    void fetchServerManifest() {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(SERVER_URL + "/api/manifest/" + Uri.encode(deviceId));
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
+            conn.setRequestProperty("X-Backup-Key", BuildConfig.BACKUP_KEY);
+            StringBuilder body = new StringBuilder();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) != -1) body.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+            }
+            JSONObject resp = new JSONObject(body.toString());
+            JSONObject serverManifest = resp.getJSONObject("manifest");
+            int added = 0;
+            java.util.Iterator<String> keys = serverManifest.keys();
+            while (keys.hasNext()) {
+                String key = keys.next(); // "category/relPath", matches manifestKey()'s suffix
+                String tag = serverManifest.getString(key);
+                if (manifest.putIfAbsent("wifi/" + key, tag) == null) added++;
+            }
+            if (added > 0) {
+                saveManifest();
+                log("Manifest: reconciled " + added + " entries from server");
+            }
+        } catch (Exception e) {
+            Log.w("BackupApp", "server manifest fetch failed (offline or first run)", e);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
     // ── permissions ─────────────────────────────────────────────
     void requestPerms() {
         List<String> need = new ArrayList<>();
@@ -673,7 +715,7 @@ public class MainActivity extends Activity {
             ok = true;
             log("Contacts: " + count + " unchanged, skipped");
         } else {
-            ok = storeBytes("contacts", "contacts.json", bytes, "application/json");
+            ok = storeBytes("contacts", "contacts.json", bytes, "application/json", versionTag);
             if (ok) {
                 markDone("contacts", "contacts.json", versionTag);
                 saveManifest();
@@ -721,7 +763,7 @@ public class MainActivity extends Activity {
             ok = true;
             log("SMS: " + count + " unchanged, skipped");
         } else {
-            ok = storeBytes("sms", "sms.json", bytes, "application/json");
+            ok = storeBytes("sms", "sms.json", bytes, "application/json", versionTag);
             if (ok) {
                 markDone("sms", "sms.json", versionTag);
                 saveManifest();
@@ -778,7 +820,7 @@ public class MainActivity extends Activity {
                 jobs.add(transferPool.submit(() -> {
                     try (InputStream in = getContentResolver().openInputStream(fileUri)) {
                         if (in == null) return false;
-                        boolean up = storeStream(category, name, in, "application/octet-stream");
+                        boolean up = storeStream(category, name, in, "application/octet-stream", versionTag);
                         if (up) markDone(category, name, versionTag);
                         return up;
                     } catch (Exception e) {
@@ -937,7 +979,7 @@ public class MainActivity extends Activity {
             }
             jobs.add(transferPool.submit(() -> {
                 try (InputStream in = new FileInputStream(f)) {
-                    boolean ok = storeStream("files", rel, in, "application/octet-stream");
+                    boolean ok = storeStream("files", rel, in, "application/octet-stream", versionTag);
                     if (ok) markDone("files", rel, versionTag);
                     return ok;
                 } catch (Exception e) {
@@ -986,7 +1028,7 @@ public class MainActivity extends Activity {
                 } else {
                     jobs.add(transferPool.submit(() -> {
                         try (InputStream in = new FileInputStream(srcDir)) {
-                            boolean ok = storeStream("apps", pkg + ".apk", in, "application/vnd.android.package-archive");
+                            boolean ok = storeStream("apps", pkg + ".apk", in, "application/vnd.android.package-archive", versionTag);
                             if (ok) markDone("apps", pkg + ".apk", versionTag);
                             return ok;
                         } catch (Exception e) {
@@ -1006,7 +1048,7 @@ public class MainActivity extends Activity {
         if (listUnchanged) {
             ok = true;
         } else {
-            ok = storeBytes("apps", "apps.json", listBytes, "application/json");
+            ok = storeBytes("apps", "apps.json", listBytes, "application/json", listVersionTag);
             if (ok) markDone("apps", "apps.json", listVersionTag);
         }
         saveManifest();
@@ -1042,7 +1084,7 @@ public class MainActivity extends Activity {
                 jobs.add(transferPool.submit(() -> {
                     try (InputStream in = getContentResolver().openInputStream(f.getUri())) {
                         if (in == null) return false;
-                        boolean ok = storeStream("files", rel, in, type);
+                        boolean ok = storeStream("files", rel, in, type, versionTag);
                         if (ok) markDone("files", rel, versionTag);
                         return ok;
                     } catch (Exception e) {
@@ -1129,16 +1171,16 @@ public class MainActivity extends Activity {
         return new File(Environment.getExternalStorageDirectory(), LOCAL_BACKUP_DIRNAME);
     }
 
-    boolean storeBytes(String category, String relPath, byte[] bytes, String contentType) {
+    boolean storeBytes(String category, String relPath, byte[] bytes, String contentType, String versionTag) {
         try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(bytes)) {
-            return storeStream(category, relPath, in, contentType);
+            return storeStream(category, relPath, in, contentType, versionTag);
         } catch (Exception e) {
             return false;
         }
     }
 
-    boolean storeStream(String category, String relPath, InputStream in, String contentType) {
-        return localMode ? saveLocal(category, relPath, in) : uploadStream(category, relPath, in, contentType);
+    boolean storeStream(String category, String relPath, InputStream in, String contentType, String versionTag) {
+        return localMode ? saveLocal(category, relPath, in) : uploadStream(category, relPath, in, contentType, versionTag);
     }
 
     // Writes straight onto this device's own shared storage under
@@ -1186,15 +1228,15 @@ public class MainActivity extends Activity {
     // ── network upload (multipart/form-data, no external deps) ─
     static final String BOUNDARY = "----BackupAppBoundary7a1c9";
 
-    boolean uploadBytes(String category, String relPath, byte[] bytes, String contentType) {
+    boolean uploadBytes(String category, String relPath, byte[] bytes, String contentType, String versionTag) {
         try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(bytes)) {
-            return uploadStream(category, relPath, in, contentType);
+            return uploadStream(category, relPath, in, contentType, versionTag);
         } catch (Exception e) {
             return false;
         }
     }
 
-    boolean uploadStream(String category, String relPath, InputStream in, String contentType) {
+    boolean uploadStream(String category, String relPath, InputStream in, String contentType, String versionTag) {
         HttpURLConnection conn = null;
         try {
             URL url = new URL(SERVER_URL + "/api/upload");
@@ -1212,6 +1254,7 @@ public class MainActivity extends Activity {
                 writeField(out, "device", deviceId);
                 writeField(out, "category", category);
                 writeField(out, "relpath", relPath);
+                if (versionTag != null) writeField(out, "versiontag", versionTag);
 
                 out.write(("--" + BOUNDARY + "\r\n").getBytes(StandardCharsets.UTF_8));
                 out.write(("Content-Disposition: form-data; name=\"file\"; filename=\""
