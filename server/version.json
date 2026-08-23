@@ -1,6 +1,6 @@
 {
-  "versionCode": 8,
-  "versionName": "1.7",
+  "versionCode": 9,
+  "versionName": "1.8",
   "apkUrl": "/backupapp.apk",
-  "notes": "Speed: contacts.json, sms.json and the installed-apps list were being re-uploaded in full on every backup regardless of whether anything changed - the only categories not covered by the skip-unchanged manifest. Now checksummed and skipped when unchanged, same as photos/videos/files/APKs. Biggest win for large SMS histories."
+  "notes": "Coverage: 'All Device Folders' only ever scanned primary storage - a removable SD card on devices that have one was silently skipped entirely, no log line to say so. Now enumerates every mounted storage volume and walks each one (SD card files get a sdcard-<id>/ prefix so they can't collide with same-named primary files)."
 }

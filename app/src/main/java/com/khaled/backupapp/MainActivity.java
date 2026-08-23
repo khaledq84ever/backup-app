@@ -878,24 +878,57 @@ public class MainActivity extends Activity {
         runBackupTask(this::backupAllFilesNow);
     }
 
+    // getExternalStorageDirectory() only ever returns primary storage - on a
+    // phone with a removable SD card (still common on budget/older Android
+    // devices), everything on that card was silently never walked at all,
+    // no error or log line to say so. getExternalFilesDirs() returns one
+    // app-private dir per mounted volume (primary + every SD card); strip
+    // the app-private suffix to recover each volume's real root.
+    List<File> storageRoots() {
+        List<File> roots = new ArrayList<>();
+        File primary = Environment.getExternalStorageDirectory();
+        roots.add(primary);
+        File[] perVolumeAppDirs = getExternalFilesDirs(null);
+        if (perVolumeAppDirs != null) {
+            for (File dir : perVolumeAppDirs) {
+                if (dir == null) continue;
+                String path = dir.getPath();
+                int cut = path.indexOf("/Android/data/");
+                if (cut <= 0) continue;
+                File volumeRoot = new File(path.substring(0, cut));
+                if (!volumeRoot.equals(primary) && volumeRoot.exists()) roots.add(volumeRoot);
+            }
+        }
+        return roots;
+    }
+
     void backupAllFilesNow() {
-        File root = Environment.getExternalStorageDirectory();
-        log("All Files: scanning " + root + " ...");
+        List<File> roots = storageRoots();
         List<Future<Boolean>> jobs = new ArrayList<>();
         AtomicInteger total = new AtomicInteger(0);
         AtomicInteger skipped = new AtomicInteger(0);
-        File[] top = root.listFiles();
-        if (top != null) {
-            for (File f : top) {
-                if (f.isDirectory() && SKIP_TOP_LEVEL.contains(f.getName())) continue;
-                walkAndUploadFile(f, f.getName(), jobs, total, skipped);
+        for (File root : roots) {
+            log("All Files: scanning " + root + " ...");
+            // Primary storage keeps its existing flat relPath layout (so the
+            // skip-unchanged manifest and server-side paths from before this
+            // change still match); an SD card gets its own prefix so its
+            // files can never collide with same-named files on primary.
+            String prefix = root.equals(Environment.getExternalStorageDirectory())
+                    ? "" : "sdcard-" + root.getName() + "/";
+            File[] top = root.listFiles();
+            if (top != null) {
+                for (File f : top) {
+                    if (f.isDirectory() && SKIP_TOP_LEVEL.contains(f.getName())) continue;
+                    walkAndUploadFile(f, prefix + f.getName(), jobs, total, skipped);
+                }
             }
         }
         int ok = waitAll(jobs, "files", total.get());
         saveManifest();
         prefs.edit().putLong("last_files", System.currentTimeMillis()).apply();
         runOnUiThread(this::refreshStatus);
-        log("All Files: " + ok + " uploaded, " + skipped.get() + " unchanged, " + total.get() + " total");
+        log("All Files: " + ok + " uploaded, " + skipped.get() + " unchanged, " + total.get() + " total"
+                + (roots.size() > 1 ? " (" + roots.size() + " storage volumes)" : ""));
     }
 
     void walkAndUploadFile(File f, String rel, List<Future<Boolean>> jobs, AtomicInteger total, AtomicInteger skipped) {
