@@ -61,8 +61,11 @@ public class MainActivity extends Activity {
     static final int ERR    = 0xFFEF4444;
     static final int DIVIDER= 0xFF1F1F2E;
 
-    // Point this at wherever backupapp-serve is running.
-    static final String SERVER_URL = "http://72.60.89.132:4425";
+    // HTTPS via Caddy reverse-proxy + free sslip.io subdomain (Let's Encrypt
+    // cert, auto-renewed) - was plain http://72.60.89.132:4425, which sent
+    // photos/SMS/contacts and the X-Backup-Key auth header in cleartext,
+    // sniffable by anyone sharing the phone's WiFi.
+    static final String SERVER_URL = "https://backupapp.72-60-89-132.sslip.io";
 
     static final int REQ_PERMS = 100;
     static final int REQ_PICK_FOLDER = 101;

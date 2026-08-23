@@ -1,6 +1,6 @@
 {
-  "versionCode": 4,
-  "versionName": "1.3",
+  "versionCode": 5,
+  "versionName": "1.4",
   "apkUrl": "/backupapp.apk",
-  "notes": "Speed: WiFi uploads now reuse one keep-alive connection instead of a fresh TCP handshake per file, and skips junk file types/dirs (cache, thumbnails, tmp, log, part) during full-device and folder backups. 6 parallel transfers (was 4)."
+  "notes": "Security: WiFi backups now travel over HTTPS (free Let's Encrypt cert via Caddy+sslip.io) instead of plain HTTP - photos, SMS, contacts and the auth key were previously sniffable by anyone on the same WiFi. Cleartext traffic is now blocked app-wide. Server also refuses uploads when the VPS disk drops below a 2GB safety margin, so a big phone backup can't take down other services sharing the box."
 }

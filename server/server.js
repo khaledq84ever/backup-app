@@ -93,7 +93,27 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB per file
 });
 
-app.post('/api/upload', requireKey, (req, res) => {
+// This VPS hosts several other self-hosted services off the same root disk
+// (crafthost, wordpress, discord bots, ...). A full-device phone backup can
+// be tens of GB, and the disk was already at 89% used when this was added -
+// refuse new uploads once free space drops below a safety margin instead of
+// running every other service on the box out of disk mid-write.
+const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024; // 2GB reserve
+function checkDiskSpace(req, res, next) {
+  try {
+    const stats = fs.statfsSync(DATA_DIR);
+    const freeBytes = stats.bavail * stats.bsize;
+    if (freeBytes < MIN_FREE_BYTES) {
+      console.error(`upload rejected: only ${(freeBytes / 1e6).toFixed(0)}MB free on disk`);
+      return res.status(507).json({ ok: false, error: 'server disk almost full, upload refused' });
+    }
+    next();
+  } catch (e) {
+    next(); // if the check itself fails, don't block uploads over it
+  }
+}
+
+app.post('/api/upload', requireKey, checkDiskSpace, (req, res) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
       console.error('upload error:', err.message);
