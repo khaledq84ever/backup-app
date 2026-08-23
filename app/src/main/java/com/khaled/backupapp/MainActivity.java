@@ -80,6 +80,31 @@ public class MainActivity extends Activity {
     static final java.util.Set<String> SKIP_TOP_LEVEL = new java.util.HashSet<>(java.util.Arrays.asList(
             "Android", "DCIM", "Pictures", "Movies", LOCAL_BACKUP_DIRNAME));
 
+    // Directories that only ever hold regenerable junk (app/browser caches,
+    // thumbnail grids, trash bins). These can easily outnumber every real
+    // file on the device and cost real backup time/bandwidth for zero value
+    // since the app that made them rebuilds them on demand - skip the whole
+    // subtree instead of walking into it.
+    static final java.util.Set<String> SKIP_DIR_NAMES = new java.util.HashSet<>(java.util.Arrays.asList(
+            "cache", ".cache", "thumbnails", ".thumbnails", "thumbcache", "trash", ".trash", ".trashed"));
+
+    // File extensions that are always transient/regenerable (download-in-
+    // progress markers, editor swap/backup files, log spam) - skipping them
+    // by type shrinks both the file count and the byte count of a full-device
+    // backup without losing anything a restore would ever need.
+    static final java.util.Set<String> SKIP_EXTENSIONS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "tmp", "temp", "log", "part", "crdownload", "download"));
+
+    static boolean isJunkDir(String name) {
+        return SKIP_DIR_NAMES.contains(name.toLowerCase(Locale.US));
+    }
+
+    static boolean isJunkFile(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return false;
+        return SKIP_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase(Locale.US));
+    }
+
     TextView logView;
     ScrollView logScroll;
     TextView statusView;
@@ -94,7 +119,7 @@ public class MainActivity extends Activity {
     // on per-file round-trip/open-close latency instead of actual transfer.
     // 4 is plenty to saturate typical WiFi/USB throughput without opening so
     // many concurrent connections/file handles that it starts thrashing.
-    static final int TRANSFER_THREADS = 4;
+    static final int TRANSFER_THREADS = 6;
     ExecutorService transferPool = Executors.newFixedThreadPool(TRANSFER_THREADS);
     // relPath -> "size:mtime" (or versionCode for apps) of the last
     // successfully transferred copy, keyed separately per destination
@@ -822,10 +847,12 @@ public class MainActivity extends Activity {
 
     void walkAndUploadFile(File f, String rel, List<Future<Boolean>> jobs, AtomicInteger total, AtomicInteger skipped) {
         if (f.isDirectory()) {
+            if (isJunkDir(f.getName())) return;
             File[] children = f.listFiles();
             if (children == null) return;
             for (File c : children) walkAndUploadFile(c, rel + "/" + c.getName(), jobs, total, skipped);
         } else {
+            if (isJunkFile(f.getName())) return;
             total.incrementAndGet();
             String versionTag = f.length() + ":" + f.lastModified();
             if (shouldSkip("files", rel, versionTag)) {
@@ -916,8 +943,10 @@ public class MainActivity extends Activity {
             if (relPrefix.isEmpty() && localMode && LOCAL_BACKUP_DIRNAME.equals(f.getName())) continue;
             String rel = relPrefix.isEmpty() ? f.getName() : relPrefix + "/" + f.getName();
             if (f.isDirectory()) {
+                if (isJunkDir(f.getName())) continue;
                 walkAndUpload(f, rel, jobs, total, skipped);
             } else {
+                if (isJunkFile(f.getName())) continue;
                 total.incrementAndGet();
                 String type = f.getType() != null ? f.getType() : "application/octet-stream";
                 String versionTag = f.length() + ":" + f.lastModified();
@@ -1098,12 +1127,23 @@ public class MainActivity extends Activity {
             }
 
             int code = conn.getResponseCode();
+            // Drain the response body fully (rather than disconnect()-ing,
+            // which forces the socket closed) so Java's HttpURLConnection can
+            // return this connection to its keep-alive pool. A full backup is
+            // thousands of small sequential requests to the same host/port -
+            // reusing one warm TCP connection instead of paying a fresh
+            // handshake per file is the single biggest WiFi speed win here.
+            try (InputStream body = code >= 200 && code < 400 ? conn.getInputStream() : conn.getErrorStream()) {
+                if (body != null) {
+                    byte[] drain = new byte[1024];
+                    while (body.read(drain) != -1) { /* discard */ }
+                }
+            }
             return code >= 200 && code < 300;
         } catch (Exception e) {
             Log.w("BackupApp", "upload failed: " + relPath, e);
-            return false;
-        } finally {
             if (conn != null) conn.disconnect();
+            return false;
         }
     }
 

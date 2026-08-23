@@ -1,6 +1,6 @@
 {
-  "versionCode": 2,
-  "versionName": "1.1",
+  "versionCode": 4,
+  "versionName": "1.3",
   "apkUrl": "/backupapp.apk",
-  "notes": "Auto-update: app now checks for and installs new versions on launch."
+  "notes": "Speed: WiFi uploads now reuse one keep-alive connection instead of a fresh TCP handshake per file, and skips junk file types/dirs (cache, thumbnails, tmp, log, part) during full-device and folder backups. 6 parallel transfers (was 4)."
 }
