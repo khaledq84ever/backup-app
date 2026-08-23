@@ -43,8 +43,10 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends Activity {
@@ -86,6 +88,23 @@ public class MainActivity extends Activity {
     final List<Button> actionButtons = new ArrayList<>();
     SharedPreferences prefs;
     ExecutorService uploader = Executors.newSingleThreadExecutor();
+    // Individual file transfers (uploads or local-mode copies) run here, in
+    // parallel, instead of one at a time - the old single-thread loop meant a
+    // backup of thousands of small files spent almost all its wall-clock time
+    // on per-file round-trip/open-close latency instead of actual transfer.
+    // 4 is plenty to saturate typical WiFi/USB throughput without opening so
+    // many concurrent connections/file handles that it starts thrashing.
+    static final int TRANSFER_THREADS = 4;
+    ExecutorService transferPool = Executors.newFixedThreadPool(TRANSFER_THREADS);
+    // relPath -> "size:mtime" (or versionCode for apps) of the last
+    // successfully transferred copy, keyed separately per destination
+    // (local vs WiFi) since a file already sitting on-device in local mode
+    // says nothing about whether the server has it. Lets repeat backups
+    // skip files that haven't changed instead of re-reading/re-sending
+    // every file every time - by far the biggest real-world speed win,
+    // since most files are unchanged between runs.
+    final ConcurrentHashMap<String, String> manifest = new ConcurrentHashMap<>();
+    File manifestFile;
     String deviceId;
     // Where a backup goes: WiFi upload to SERVER_URL, or written straight onto
     // this device's shared storage so it shows up in a plain file browser the
@@ -107,6 +126,8 @@ public class MainActivity extends Activity {
         deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
         if (deviceId == null) deviceId = "unknown-device";
         localMode = prefs.getBoolean("local_mode", false);
+        manifestFile = new File(getFilesDir(), "manifest.properties");
+        loadManifest();
 
         buildUi();
         requestPerms();
@@ -664,31 +685,45 @@ public class MainActivity extends Activity {
 
     int uploadCollection(Uri collection, String category) {
         log(category + ": scanning...");
-        int ok = 0, total = 0;
+        List<Future<Boolean>> jobs = new ArrayList<>();
+        int total = 0, skipped = 0;
         Cursor c = getContentResolver().query(collection,
-                new String[]{MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME}, null, null, null);
+                new String[]{MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED}, null, null, null);
         if (c != null) {
             int idIdx = c.getColumnIndex(MediaStore.MediaColumns._ID);
             int nameIdx = c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+            int sizeIdx = c.getColumnIndex(MediaStore.MediaColumns.SIZE);
+            int modIdx = c.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED);
             total = c.getCount();
-            int i = 0;
             while (c.moveToNext()) {
-                i++;
                 long id = c.getLong(idIdx);
                 String name = c.getString(nameIdx);
-                Uri fileUri = Uri.withAppendedPath(collection, String.valueOf(id));
-                try (InputStream in = getContentResolver().openInputStream(fileUri)) {
-                    if (in == null) continue;
-                    boolean up = storeStream(category, name, in, "application/octet-stream");
-                    if (up) ok++;
-                    if (i % 10 == 0) log(category + ": " + i + "/" + total);
-                } catch (Exception e) {
-                    Log.w("BackupApp", "media upload failed: " + name, e);
+                long size = sizeIdx >= 0 ? c.getLong(sizeIdx) : -1;
+                long mtime = modIdx >= 0 ? c.getLong(modIdx) : -1;
+                String versionTag = size + ":" + mtime;
+                if (size >= 0 && shouldSkip(category, name, versionTag)) {
+                    skipped++;
+                    continue;
                 }
+                Uri fileUri = Uri.withAppendedPath(collection, String.valueOf(id));
+                jobs.add(transferPool.submit(() -> {
+                    try (InputStream in = getContentResolver().openInputStream(fileUri)) {
+                        if (in == null) return false;
+                        boolean up = storeStream(category, name, in, "application/octet-stream");
+                        if (up) markDone(category, name, versionTag);
+                        return up;
+                    } catch (Exception e) {
+                        Log.w("BackupApp", "media upload failed: " + name, e);
+                        return false;
+                    }
+                }));
             }
             c.close();
         }
-        log(category + ": " + ok + "/" + total + " uploaded");
+        int ok = waitAll(jobs, category, total);
+        saveManifest();
+        log(category + ": " + ok + " uploaded, " + skipped + " unchanged, " + total + " total");
         return ok;
     }
 
@@ -727,11 +762,15 @@ public class MainActivity extends Activity {
             return;
         }
         log("Files: scanning " + root.getName() + "...");
-        int[] counters = {0, 0};
-        walkAndUpload(root, "", counters);
+        List<Future<Boolean>> jobs = new ArrayList<>();
+        AtomicInteger total = new AtomicInteger(0);
+        AtomicInteger skipped = new AtomicInteger(0);
+        walkAndUpload(root, "", jobs, total, skipped);
+        int ok = waitAll(jobs, "files", total.get());
+        saveManifest();
         prefs.edit().putLong("last_files", System.currentTimeMillis()).apply();
         runOnUiThread(this::refreshStatus);
-        log("Files: " + counters[0] + "/" + counters[1] + " uploaded");
+        log("Files: " + ok + " uploaded, " + skipped.get() + " unchanged, " + total.get() + " total");
     }
 
     // ── entire device storage (all folders) ─────────────────────
@@ -764,33 +803,45 @@ public class MainActivity extends Activity {
     void backupAllFilesNow() {
         File root = Environment.getExternalStorageDirectory();
         log("All Files: scanning " + root + " ...");
-        int[] counters = {0, 0};
+        List<Future<Boolean>> jobs = new ArrayList<>();
+        AtomicInteger total = new AtomicInteger(0);
+        AtomicInteger skipped = new AtomicInteger(0);
         File[] top = root.listFiles();
         if (top != null) {
             for (File f : top) {
                 if (f.isDirectory() && SKIP_TOP_LEVEL.contains(f.getName())) continue;
-                walkAndUploadFile(f, f.getName(), counters);
+                walkAndUploadFile(f, f.getName(), jobs, total, skipped);
             }
         }
+        int ok = waitAll(jobs, "files", total.get());
+        saveManifest();
         prefs.edit().putLong("last_files", System.currentTimeMillis()).apply();
         runOnUiThread(this::refreshStatus);
-        log("All Files: " + counters[0] + "/" + counters[1] + " uploaded");
+        log("All Files: " + ok + " uploaded, " + skipped.get() + " unchanged, " + total.get() + " total");
     }
 
-    void walkAndUploadFile(File f, String rel, int[] counters) {
+    void walkAndUploadFile(File f, String rel, List<Future<Boolean>> jobs, AtomicInteger total, AtomicInteger skipped) {
         if (f.isDirectory()) {
             File[] children = f.listFiles();
             if (children == null) return;
-            for (File c : children) walkAndUploadFile(c, rel + "/" + c.getName(), counters);
+            for (File c : children) walkAndUploadFile(c, rel + "/" + c.getName(), jobs, total, skipped);
         } else {
-            counters[1]++;
-            try (InputStream in = new FileInputStream(f)) {
-                boolean ok = storeStream("files", rel, in, "application/octet-stream");
-                if (ok) counters[0]++;
-                if (counters[1] % 20 == 0) log("files: " + counters[0] + "/" + counters[1]);
-            } catch (Exception e) {
-                Log.w("BackupApp", "file upload failed: " + rel, e);
+            total.incrementAndGet();
+            String versionTag = f.length() + ":" + f.lastModified();
+            if (shouldSkip("files", rel, versionTag)) {
+                skipped.incrementAndGet();
+                return;
             }
+            jobs.add(transferPool.submit(() -> {
+                try (InputStream in = new FileInputStream(f)) {
+                    boolean ok = storeStream("files", rel, in, "application/octet-stream");
+                    if (ok) markDone("files", rel, versionTag);
+                    return ok;
+                } catch (Exception e) {
+                    Log.w("BackupApp", "file upload failed: " + rel, e);
+                    return false;
+                }
+            }));
         }
     }
 
@@ -799,7 +850,9 @@ public class MainActivity extends Activity {
         PackageManager pm = getPackageManager();
         List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
         StringBuilder json = new StringBuilder("[\n");
-        int count = 0, apkOk = 0;
+        int count = 0;
+        AtomicInteger apkSkipped = new AtomicInteger(0);
+        List<Future<Boolean>> jobs = new ArrayList<>();
         log("Apps: found " + apps.size() + " installed apps, reading...");
         for (ApplicationInfo ai : apps) {
             boolean isSystem = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
@@ -822,25 +875,38 @@ public class MainActivity extends Activity {
 
             // Best-effort: back up the installed APK for user (non-system) apps.
             if (!isSystem && ai.sourceDir != null) {
-                try (InputStream in = new FileInputStream(ai.sourceDir)) {
-                    boolean ok = storeStream("apps", ai.packageName + ".apk", in, "application/vnd.android.package-archive");
-                    if (ok) apkOk++;
-                } catch (Exception e) {
-                    Log.w("BackupApp", "apk backup skipped: " + ai.packageName, e);
+                String pkg = ai.packageName;
+                String srcDir = ai.sourceDir;
+                String versionTag = String.valueOf(versionCode);
+                if (shouldSkip("apps", pkg + ".apk", versionTag)) {
+                    apkSkipped.incrementAndGet();
+                } else {
+                    jobs.add(transferPool.submit(() -> {
+                        try (InputStream in = new FileInputStream(srcDir)) {
+                            boolean ok = storeStream("apps", pkg + ".apk", in, "application/vnd.android.package-archive");
+                            if (ok) markDone("apps", pkg + ".apk", versionTag);
+                            return ok;
+                        } catch (Exception e) {
+                            Log.w("BackupApp", "apk backup skipped: " + pkg, e);
+                            return false;
+                        }
+                    }));
                 }
             }
         }
         json.append("\n]\n");
+        int apkOk = waitAll(jobs, "apps", jobs.size());
+        saveManifest();
         boolean ok = storeBytes("apps", "apps.json",
                 json.toString().getBytes(StandardCharsets.UTF_8), "application/json");
         if (ok) {
             prefs.edit().putLong("last_apps", System.currentTimeMillis()).apply();
             runOnUiThread(this::refreshStatus);
         }
-        log("Apps: " + count + " listed, " + apkOk + " APKs uploaded, list " + (ok ? "ok" : "FAILED"));
+        log("Apps: " + count + " listed, " + apkOk + " APKs uploaded, " + apkSkipped.get() + " unchanged, list " + (ok ? "ok" : "FAILED"));
     }
 
-    void walkAndUpload(DocumentFile dir, String relPrefix, int[] counters) {
+    void walkAndUpload(DocumentFile dir, String relPrefix, List<Future<Boolean>> jobs, AtomicInteger total, AtomicInteger skipped) {
         DocumentFile[] children = dir.listFiles();
         for (DocumentFile f : children) {
             // Same self-recursion guard as backupAllFilesNow(): if the user
@@ -850,20 +916,86 @@ public class MainActivity extends Activity {
             if (relPrefix.isEmpty() && localMode && LOCAL_BACKUP_DIRNAME.equals(f.getName())) continue;
             String rel = relPrefix.isEmpty() ? f.getName() : relPrefix + "/" + f.getName();
             if (f.isDirectory()) {
-                walkAndUpload(f, rel, counters);
+                walkAndUpload(f, rel, jobs, total, skipped);
             } else {
-                counters[1]++;
-                try (InputStream in = getContentResolver().openInputStream(f.getUri())) {
-                    if (in == null) continue;
-                    boolean ok = storeStream("files", rel, in,
-                            f.getType() != null ? f.getType() : "application/octet-stream");
-                    if (ok) counters[0]++;
-                    if (counters[1] % 10 == 0) log("files: " + counters[0] + "/" + counters[1]);
-                } catch (Exception e) {
-                    Log.w("BackupApp", "file upload failed: " + rel, e);
+                total.incrementAndGet();
+                String type = f.getType() != null ? f.getType() : "application/octet-stream";
+                String versionTag = f.length() + ":" + f.lastModified();
+                if (shouldSkip("files", rel, versionTag)) {
+                    skipped.incrementAndGet();
+                    continue;
                 }
+                jobs.add(transferPool.submit(() -> {
+                    try (InputStream in = getContentResolver().openInputStream(f.getUri())) {
+                        if (in == null) return false;
+                        boolean ok = storeStream("files", rel, in, type);
+                        if (ok) markDone("files", rel, versionTag);
+                        return ok;
+                    } catch (Exception e) {
+                        Log.w("BackupApp", "file upload failed: " + rel, e);
+                        return false;
+                    }
+                }));
             }
         }
+    }
+
+    // ── skip-unchanged manifest + parallel transfer helpers ────
+    void loadManifest() {
+        if (!manifestFile.exists()) return;
+        java.util.Properties p = new java.util.Properties();
+        try (InputStream in = new FileInputStream(manifestFile)) {
+            p.load(in);
+            for (String name : p.stringPropertyNames()) manifest.put(name, p.getProperty(name));
+        } catch (Exception e) {
+            Log.w("BackupApp", "manifest load failed", e);
+        }
+    }
+
+    synchronized void saveManifest() {
+        java.util.Properties p = new java.util.Properties();
+        p.putAll(manifest);
+        try (OutputStream out = new FileOutputStream(manifestFile)) {
+            p.store(out, null);
+        } catch (Exception e) {
+            Log.w("BackupApp", "manifest save failed", e);
+        }
+    }
+
+    String manifestKey(String category, String relPath) {
+        return (localMode ? "local/" : "wifi/") + category + "/" + relPath;
+    }
+
+    boolean shouldSkip(String category, String relPath, String versionTag) {
+        String val = manifest.get(manifestKey(category, relPath));
+        if (val == null || !val.equals(versionTag)) return false;
+        if (localMode) {
+            // Confirm the file is actually still there - the manifest alone
+            // doesn't know if the user cleared the BackupApp folder.
+            File dest = safeLocalFile(category, relPath);
+            return dest != null && dest.exists();
+        }
+        return true; // trust the manifest for WiFi mode - re-checking with the server would cost a round-trip per file, defeating the point.
+    }
+
+    void markDone(String category, String relPath, String versionTag) {
+        manifest.put(manifestKey(category, relPath), versionTag);
+    }
+
+    // Blocks until every submitted transfer finishes (they're already
+    // running in parallel on transferPool), logging periodic progress.
+    int waitAll(List<Future<Boolean>> jobs, String category, int total) {
+        int ok = 0, done = 0;
+        for (Future<Boolean> f : jobs) {
+            try {
+                if (Boolean.TRUE.equals(f.get())) ok++;
+            } catch (Exception e) {
+                Log.w("BackupApp", "transfer job failed", e);
+            }
+            done++;
+            if (done % 20 == 0) log(category + ": " + done + "/" + jobs.size());
+        }
+        return ok;
     }
 
     // ── store (routes to WiFi upload or local-device write) ────
@@ -893,8 +1025,8 @@ public class MainActivity extends Activity {
             if (dest == null) return false;
             File parent = dest.getParentFile();
             if (parent != null) parent.mkdirs();
-            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(dest))) {
-                byte[] buf = new byte[8192];
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(dest), 65536)) {
+                byte[] buf = new byte[65536];
                 int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
             }
@@ -959,7 +1091,7 @@ public class MainActivity extends Activity {
                 out.write(("Content-Disposition: form-data; name=\"file\"; filename=\""
                         + relPath.replace("\"", "'") + "\"\r\n").getBytes(StandardCharsets.UTF_8));
                 out.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-                byte[] buf = new byte[8192];
+                byte[] buf = new byte[65536];
                 int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
                 out.write(("\r\n--" + BOUNDARY + "--\r\n").getBytes(StandardCharsets.UTF_8));
