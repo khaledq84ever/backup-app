@@ -120,8 +120,9 @@ public class MainActivity extends Activity {
     // parallel, instead of one at a time - the old single-thread loop meant a
     // backup of thousands of small files spent almost all its wall-clock time
     // on per-file round-trip/open-close latency instead of actual transfer.
-    // 4 is plenty to saturate typical WiFi/USB throughput without opening so
-    // many concurrent connections/file handles that it starts thrashing.
+    // 6 saturates typical WiFi/USB throughput (now that uploads reuse a
+    // keep-alive connection instead of paying a handshake per file) without
+    // opening so many concurrent connections/file handles that it thrashes.
     static final int TRANSFER_THREADS = 6;
     ExecutorService transferPool = Executors.newFixedThreadPool(TRANSFER_THREADS);
     // relPath -> "size:mtime" (or versionCode for apps) of the last
@@ -146,6 +147,15 @@ public class MainActivity extends Activity {
     // run back-to-back, but not useful to run at the same time by accident.
     final AtomicInteger inFlight = new AtomicInteger(0);
     File pendingApk;
+    // A full-device backup can run for many minutes on a large phone; the
+    // manifest already declares WAKE_LOCK but nothing ever acquired one, so
+    // if the screen locked mid-backup (the normal case - the user starts it
+    // and pockets the phone) Doze could stall the CPU/network and silently
+    // hang or drastically slow the transfer. Held only while a backup task
+    // is actually in flight, with a safety timeout in case release() is
+    // ever missed.
+    android.os.PowerManager.WakeLock wakeLock;
+    static final long WAKE_LOCK_TIMEOUT_MS = 30 * 60 * 1000L;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -157,6 +167,10 @@ public class MainActivity extends Activity {
         manifestFile = new File(getFilesDir(), "manifest.properties");
         loadManifest();
 
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "BackupApp:backup");
+        wakeLock.setReferenceCounted(false);
+
         buildUi();
         requestPerms();
         if (BuildConfig.BACKUP_KEY.isEmpty()) {
@@ -164,6 +178,12 @@ public class MainActivity extends Activity {
                     "and rebuild, or an authenticated server will reject every upload with 401.");
         }
         Executors.newSingleThreadExecutor().execute(this::checkForUpdate);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
     }
 
     // ── UI ──────────────────────────────────────────────────────
@@ -413,6 +433,7 @@ public class MainActivity extends Activity {
     void runBackupTask(Runnable task) {
         if (inFlight.getAndIncrement() == 0) {
             runOnUiThread(() -> setButtonsEnabled(false));
+            wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
         }
         uploader.execute(() -> {
             try {
@@ -420,6 +441,7 @@ public class MainActivity extends Activity {
             } finally {
                 if (inFlight.decrementAndGet() == 0) {
                     runOnUiThread(() -> setButtonsEnabled(true));
+                    if (wakeLock.isHeld()) wakeLock.release();
                 }
             }
         });

@@ -1,6 +1,6 @@
 {
-  "versionCode": 5,
-  "versionName": "1.4",
+  "versionCode": 6,
+  "versionName": "1.5",
   "apkUrl": "/backupapp.apk",
-  "notes": "Security: WiFi backups now travel over HTTPS (free Let's Encrypt cert via Caddy+sslip.io) instead of plain HTTP - photos, SMS, contacts and the auth key were previously sniffable by anyone on the same WiFi. Cleartext traffic is now blocked app-wide. Server also refuses uploads when the VPS disk drops below a 2GB safety margin, so a big phone backup can't take down other services sharing the box."
+  "notes": "Fix: the app declared WAKE_LOCK but never used it - a full-device backup could stall or slow drastically once the screen locked (Doze). Now holds a partial wake lock for the duration of any backup, released automatically when it finishes (30-min safety timeout)."
 }
