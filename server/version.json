@@ -1,6 +1,6 @@
 {
-  "versionCode": 7,
-  "versionName": "1.6",
+  "versionCode": 8,
+  "versionName": "1.7",
   "apkUrl": "/backupapp.apk",
-  "notes": "Fix: the WiFi/USB destination toggle stayed tappable during an active backup. storeStream() reads the destination fresh per file, so switching it mid-run could split one backup's files between local storage and the server. Now disabled along with every other action button while a backup is in flight."
+  "notes": "Speed: contacts.json, sms.json and the installed-apps list were being re-uploaded in full on every backup regardless of whether anything changed - the only categories not covered by the skip-unchanged manifest. Now checksummed and skipped when unchanged, same as photos/videos/files/APKs. Biggest win for large SMS histories."
 }
