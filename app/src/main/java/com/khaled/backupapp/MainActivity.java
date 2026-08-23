@@ -114,6 +114,8 @@ public class MainActivity extends Activity {
     TextView destLabel;
     Button destServerBtn, destUsbBtn;
     final List<Button> actionButtons = new ArrayList<>();
+    Button primaryButton;
+    String primaryButtonLabel;
     SharedPreferences prefs;
     ExecutorService uploader = Executors.newSingleThreadExecutor();
     // Individual file transfers (uploads or local-mode copies) run here, in
@@ -157,12 +159,20 @@ public class MainActivity extends Activity {
     android.os.PowerManager.WakeLock wakeLock;
     static final long WAKE_LOCK_TIMEOUT_MS = 30 * 60 * 1000L;
 
+    // The CPU wake lock above does not stop the WiFi radio itself from
+    // dropping into power-save once the screen locks - on many devices that
+    // suspends/throttles the radio between DTIM beacons, which aborts
+    // whatever multipart upload happens to be mid-flight on any of the
+    // transferPool threads at that moment (seen as a burst of server-side
+    // "Request aborted" errors, not one-at-a-time). WIFI_MODE_FULL_HIGH_PERF
+    // keeps the radio fully awake for the duration of a backup.
+    android.net.wifi.WifiManager.WifiLock wifiLock;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("backupapp", MODE_PRIVATE);
-        deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-        if (deviceId == null) deviceId = "unknown-device";
+        deviceId = deviceFolderName();
         localMode = prefs.getBoolean("local_mode", false);
         manifestFile = new File(getFilesDir(), "manifest.properties");
         loadManifest();
@@ -171,6 +181,12 @@ public class MainActivity extends Activity {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "BackupApp:backup");
         wakeLock.setReferenceCounted(false);
+
+        android.net.wifi.WifiManager wifiManager =
+                (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+        wifiLock = wifiManager.createWifiLock(
+                android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "BackupApp:backup");
+        wifiLock.setReferenceCounted(false);
 
         buildUi();
         requestPerms();
@@ -185,6 +201,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
     }
 
     // ── UI ──────────────────────────────────────────────────────
@@ -346,6 +363,8 @@ public class MainActivity extends Activity {
         lp.bottomMargin = dp(14);
         b.setLayoutParams(lp);
         actionButtons.add(b);
+        primaryButton = b;
+        primaryButtonLabel = label;
         root.addView(b);
     }
 
@@ -402,6 +421,13 @@ public class MainActivity extends Activity {
 
     void setButtonsEnabled(boolean enabled) {
         for (Button b : actionButtons) b.setEnabled(enabled);
+        // A backup can run for minutes with long silent gaps (scanning
+        // thousands of files, listing hundreds of installed apps) between
+        // log lines - buttons just going grey with no other signal reads
+        // as a frozen app rather than one still working, so say so explicitly.
+        if (primaryButton != null) {
+            primaryButton.setText(enabled ? primaryButtonLabel : "Working…  ·  جاري النسخ...");
+        }
     }
 
     void setLocalMode(boolean local) {
@@ -431,6 +457,7 @@ public class MainActivity extends Activity {
         if (inFlight.getAndIncrement() == 0) {
             runOnUiThread(() -> setButtonsEnabled(false));
             wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+            wifiLock.acquire();
         }
         uploader.execute(() -> {
             try {
@@ -439,6 +466,7 @@ public class MainActivity extends Activity {
                 if (inFlight.decrementAndGet() == 0) {
                     runOnUiThread(() -> setButtonsEnabled(true));
                     if (wakeLock.isHeld()) wakeLock.release();
+                    if (wifiLock.isHeld()) wifiLock.release();
                 }
             }
         });
@@ -446,6 +474,19 @@ public class MainActivity extends Activity {
 
     int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density);
+    }
+
+    // Server/Drive folder name for this phone. Used to be the raw
+    // ANDROID_ID (e.g. "d974803419df8901") - unreadable in a Drive file
+    // list. The device model is stable across reinstalls just like
+    // ANDROID_ID is, and is actually meaningful to a human browsing Drive.
+    // Two identical phone models would collide into the same folder, but
+    // that's an acceptable tradeoff for the common single-phone case this
+    // app is built for.
+    String deviceFolderName() {
+        String raw = Build.MANUFACTURER + "_" + Build.MODEL;
+        String safe = raw.replaceAll("[^a-zA-Z0-9_-]", "_");
+        return safe.isEmpty() ? "unknown-device" : safe;
     }
 
     void refreshStatus() {
@@ -971,7 +1012,13 @@ public class MainActivity extends Activity {
             for (File c : children) walkAndUploadFile(c, rel + "/" + c.getName(), jobs, total, skipped);
         } else {
             if (isJunkFile(f.getName())) return;
-            total.incrementAndGet();
+            int scanned = total.incrementAndGet();
+            // The recursive tree walk itself (before a single upload job is
+            // even queued) can take a long time on a phone with tens of
+            // thousands of files, and previously logged nothing at all
+            // during it - a long silent gap with the buttons disabled looks
+            // identical to a frozen app.
+            if (scanned % 500 == 0) log("files: scanning... " + scanned + " found so far");
             String versionTag = f.length() + ":" + f.lastModified();
             if (shouldSkip("files", rel, versionTag)) {
                 skipped.incrementAndGet();
@@ -1000,6 +1047,7 @@ public class MainActivity extends Activity {
         List<Future<Boolean>> jobs = new ArrayList<>();
         log("Apps: found " + apps.size() + " installed apps, reading...");
         for (ApplicationInfo ai : apps) {
+            if (count > 0 && count % 100 == 0) log("apps: read " + count + "/" + apps.size());
             boolean isSystem = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
             String versionName = "";
             long versionCode = 0;

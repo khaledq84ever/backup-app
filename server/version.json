@@ -1,6 +1,6 @@
 {
-  "versionCode": 11,
-  "versionName": "1.10",
+  "versionCode": 13,
+  "versionName": "1.12",
   "apkUrl": "/backupapp.apk",
-  "notes": "Resume support: the server now remembers what each device has already uploaded (per-device manifest, updated on every upload), and the app pulls that down once at launch to fill in any gaps in its own local skip-list. So even after a reinstall or cleared app data, re-running a backup won't re-upload files the server already has - it picks up from what's actually missing."
+  "notes": "Backups are now folder-named by phone model (e.g. \"Samsung_SM-G991B\") instead of a random device ID, so they're readable in Google Drive. Drive sync now moves files off the VPS instead of just copying them (VPS disk was 93% full), running every 5 minutes."
 }
