@@ -1,6 +1,6 @@
 {
-  "versionCode": 6,
-  "versionName": "1.5",
+  "versionCode": 7,
+  "versionName": "1.6",
   "apkUrl": "/backupapp.apk",
-  "notes": "Fix: the app declared WAKE_LOCK but never used it - a full-device backup could stall or slow drastically once the screen locked (Doze). Now holds a partial wake lock for the duration of any backup, released automatically when it finishes (30-min safety timeout)."
+  "notes": "Fix: the WiFi/USB destination toggle stayed tappable during an active backup. storeStream() reads the destination fresh per file, so switching it mid-run could split one backup's files between local storage and the server. Now disabled along with every other action button while a backup is in flight."
 }

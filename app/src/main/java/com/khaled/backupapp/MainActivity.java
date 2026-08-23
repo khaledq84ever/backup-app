@@ -272,6 +272,12 @@ public class MainActivity extends Activity {
         destUsbBtn.setLayoutParams(lp2);
         destRow.addView(destUsbBtn);
         destCard.addView(destRow);
+        // Must stay disabled during an active backup like every other action
+        // button: storeStream() reads `localMode` fresh on every single file,
+        // so switching destination mid-run would split one backup's output
+        // between local storage and the server instead of blocking the tap.
+        actionButtons.add(destServerBtn);
+        actionButtons.add(destUsbBtn);
 
         destLabel = new TextView(this);
         destLabel.setTextColor(SUB);
