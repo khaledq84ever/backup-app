@@ -212,26 +212,17 @@ public class MainActivity extends Activity {
         pageScroll.addView(root, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout titleRow = new LinearLayout(this);
-        titleRow.setOrientation(LinearLayout.HORIZONTAL);
-        titleRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView titleIcon = new TextView(this);
-        titleIcon.setText("💾");
-        titleIcon.setTextSize(28);
-        titleIcon.setPadding(0, 0, dp(8), 0);
-        titleRow.addView(titleIcon);
         TextView title = new TextView(this);
         title.setText("Backup App");
         title.setTextColor(TEXT);
-        title.setTextSize(26);
+        title.setTextSize(22);
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
-        titleRow.addView(title);
-        root.addView(titleRow);
+        root.addView(title);
 
         TextView subtitle = new TextView(this);
         subtitle.setText("Full device backup — نسخ احتياطي كامل للجهاز");
         subtitle.setTextColor(SUB);
-        subtitle.setTextSize(13);
+        subtitle.setTextSize(12);
         subtitle.setPadding(0, dp(4), 0, dp(20));
         root.addView(subtitle);
 
@@ -239,7 +230,7 @@ public class MainActivity extends Activity {
         TextView destTitle = new TextView(this);
         destTitle.setText("SAVE TO  ·  احفظ في");
         destTitle.setTextColor(SUB);
-        destTitle.setTextSize(11);
+        destTitle.setTextSize(10);
         destTitle.setTypeface(destTitle.getTypeface(), android.graphics.Typeface.BOLD);
         destTitle.setPadding(dp(2), 0, 0, dp(8));
         root.addView(destTitle);
@@ -252,9 +243,9 @@ public class MainActivity extends Activity {
         LinearLayout destRow = new LinearLayout(this);
         destRow.setOrientation(LinearLayout.HORIZONTAL);
         destServerBtn = new Button(this);
-        destServerBtn.setText("☁ Server (WiFi)");
+        destServerBtn.setText("Server (WiFi)");
         destServerBtn.setAllCaps(false);
-        destServerBtn.setTextSize(13);
+        destServerBtn.setTextSize(11);
         destServerBtn.setPadding(dp(8), dp(10), dp(8), dp(10));
         destServerBtn.setOnClickListener(v -> setLocalMode(false));
         LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
@@ -263,9 +254,9 @@ public class MainActivity extends Activity {
         destRow.addView(destServerBtn);
 
         destUsbBtn = new Button(this);
-        destUsbBtn.setText("🔌 This Device (USB → PC)");
+        destUsbBtn.setText("This Device (USB → PC)");
         destUsbBtn.setAllCaps(false);
-        destUsbBtn.setTextSize(13);
+        destUsbBtn.setTextSize(11);
         destUsbBtn.setPadding(dp(8), dp(10), dp(8), dp(10));
         destUsbBtn.setOnClickListener(v -> setLocalMode(true));
         LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
@@ -289,7 +280,7 @@ public class MainActivity extends Activity {
 
         statusView = new TextView(this);
         statusView.setTextColor(SUB);
-        statusView.setTextSize(12);
+        statusView.setTextSize(11);
         statusView.setBackground(pill(CARD, 14));
         statusView.setPadding(dp(14), dp(12), dp(14), dp(12));
         LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
@@ -301,16 +292,15 @@ public class MainActivity extends Activity {
         root.addView(statusView);
 
         // Primary call-to-action, full width, unmissable.
-        addPrimaryButton(root, "⚡ Backup Everything  ·  انسخ كل شي", v -> backupEverything());
+        addPrimaryButton(root, "Backup Everything  ·  انسخ كل شي", v -> backupEverything());
 
-        // Everything else in a compact 2-column grid — icons carry most of
-        // the scanning, EN+AR only where it fits.
+        // Everything else in a compact 2-column grid, EN+AR only where it fits.
         addButtonGrid(root, new Object[][]{
-                {"🖼️ Photos && Videos", (View.OnClickListener) v -> runBackupTask(this::backupMedia)},
-                {"👤 Contacts", (View.OnClickListener) v -> runBackupTask(this::backupContacts)},
-                {"💬 SMS", (View.OnClickListener) v -> runBackupTask(this::backupSms)},
-                {"📱 Installed Apps", (View.OnClickListener) v -> runBackupTask(this::backupApps)},
-                {"📁 All Device Folders", (View.OnClickListener) v -> backupAllFiles()},
+                {"Photos && Videos", (View.OnClickListener) v -> runBackupTask(this::backupMedia)},
+                {"Contacts", (View.OnClickListener) v -> runBackupTask(this::backupContacts)},
+                {"SMS", (View.OnClickListener) v -> runBackupTask(this::backupSms)},
+                {"Installed Apps", (View.OnClickListener) v -> runBackupTask(this::backupApps)},
+                {"All Device Folders", (View.OnClickListener) v -> backupAllFiles()},
         });
 
         addGhostButton(root, "Pick one folder (fallback) / اختر مجلد", v -> pickFolder());
@@ -318,14 +308,14 @@ public class MainActivity extends Activity {
         TextView logLabel = new TextView(this);
         logLabel.setText("LOG  ·  السجل");
         logLabel.setTextColor(SUB);
-        logLabel.setTextSize(11);
+        logLabel.setTextSize(10);
         logLabel.setTypeface(logLabel.getTypeface(), android.graphics.Typeface.BOLD);
         logLabel.setPadding(dp(2), dp(20), 0, dp(8));
         root.addView(logLabel);
 
         logView = new TextView(this);
         logView.setTextColor(TEXT);
-        logView.setTextSize(12);
+        logView.setTextSize(11);
         logView.setTextIsSelectable(true);
         logView.setText("", TextView.BufferType.SPANNABLE);
 
@@ -346,7 +336,7 @@ public class MainActivity extends Activity {
         b.setAllCaps(false);
         b.setTextColor(BG);
         b.setTypeface(b.getTypeface(), android.graphics.Typeface.BOLD);
-        b.setTextSize(15);
+        b.setTextSize(14);
         b.setBackground(pill(ACCENT, 14));
         b.setPadding(dp(16), dp(16), dp(16), dp(16));
         b.setOnClickListener(onClick);
@@ -358,7 +348,7 @@ public class MainActivity extends Activity {
         root.addView(b);
     }
 
-    // Two-per-row grid of secondary actions — compact, icon-led.
+    // Two-per-row grid of secondary actions.
     void addButtonGrid(LinearLayout root, Object[][] items) {
         for (int i = 0; i < items.length; i += 2) {
             LinearLayout row = new LinearLayout(this);
@@ -380,7 +370,7 @@ public class MainActivity extends Activity {
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(TEXT);
-        b.setTextSize(13);
+        b.setTextSize(12);
         b.setBackground(pill(CARD, 12));
         b.setPadding(dp(10), dp(14), dp(10), dp(14));
         b.setOnClickListener(onClick);
@@ -397,7 +387,7 @@ public class MainActivity extends Activity {
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(SUB);
-        b.setTextSize(12);
+        b.setTextSize(11);
         b.setBackground(outlinePill(DIVIDER, 12));
         b.setPadding(dp(10), dp(10), dp(10), dp(10));
         b.setOnClickListener(onClick);

@@ -1,6 +1,6 @@
 {
-  "versionCode": 9,
-  "versionName": "1.8",
+  "versionCode": 10,
+  "versionName": "1.9",
   "apkUrl": "/backupapp.apk",
-  "notes": "Coverage: 'All Device Folders' only ever scanned primary storage - a removable SD card on devices that have one was silently skipped entirely, no log line to say so. Now enumerates every mounted storage volume and walks each one (SD card files get a sdcard-<id>/ prefix so they can't collide with same-named primary files)."
+  "notes": "UI: removed emoji icons from the title and every button (title, destination toggle, primary button, action grid) - text-only labels now. Trimmed text sizes across the board so long labels like \"This Device (USB → PC)\" fit cleanly on one line in their half-width slot."
 }

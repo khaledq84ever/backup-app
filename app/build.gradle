@@ -18,8 +18,8 @@ android {
         applicationId "com.khaled.backupapp"
         minSdkVersion 24
         targetSdkVersion 34
-        versionCode 9
-        versionName "1.8"
+        versionCode 10
+        versionName "1.9"
         buildConfigField "String", "BACKUP_KEY", "\"${backupKey}\""
     }
     buildFeatures {
