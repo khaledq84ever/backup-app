@@ -48,8 +48,16 @@ function requireKey(req, res, next) {
 // Only allow simple id-like device/category segments; relpath may have
 // subfolders but never "..", an absolute path, or a device/category
 // segment that would escape DATA_DIR.
+//
+// The charset below allows "." (for names like "Samsung_SM-G991B.1"), which
+// means "." and ".." themselves pass the regex - path.join(DATA_DIR, "..",
+// category) then escapes DATA_DIR entirely. Confirmed live: POST with
+// device=".." wrote a file to server/pwn/ instead of server/data/../pwn.
+// Reject those two literal values explicitly, same as safeRelPath already
+// does for relpath's ".." segments.
 function safeSegment(s) {
-  return typeof s === 'string' && s.length > 0 && s.length < 200 && /^[a-zA-Z0-9._-]+$/.test(s);
+  return typeof s === 'string' && s.length > 0 && s.length < 200
+    && /^[a-zA-Z0-9._-]+$/.test(s) && s !== '.' && s !== '..';
 }
 function safeRelPath(rel) {
   if (typeof rel !== 'string' || rel.length === 0 || rel.length > 1000) return null;
@@ -161,7 +169,11 @@ app.post('/api/upload', requireKey, checkDiskSpace, (req, res) => {
     if (typeof versionTag === 'string' && versionTag.length > 0 && versionTag.length < 200) {
       updateDeviceManifest(req.body.device, req.body.category, req._destRel, versionTag);
     }
-    res.json({ ok: true, path: `${req.body.device}/${req.body.category}/${req.body.relpath}` });
+    // req._destRel is the sanitized relpath actually used on disk - echoing
+    // the raw req.body.relpath here instead was cosmetically wrong (e.g. an
+    // absolute-path relpath reports back with a stray leading slash even
+    // though the write itself correctly landed inside DATA_DIR).
+    res.json({ ok: true, path: `${req.body.device}/${req.body.category}/${req._destRel}` });
   });
 });
 

@@ -74,6 +74,17 @@ public class MainActivity extends Activity {
 
     static final String LOCAL_BACKUP_DIRNAME = "BackupApp";
 
+    // The X-Backup-Key auth secret used to live as a BuildConfig constant
+    // baked in at compile time - but this APK is served publicly and
+    // unauthenticated from the server's /backupapp.apk (by design, so
+    // anyone can install with one click), which meant the "secret" was
+    // trivially extractable from the binary by anyone who downloaded it,
+    // defeating requireKey on every upload/manifest/status endpoint for
+    // every device, not just this one. Stored only in this install's
+    // private SharedPreferences instead - entered once at first run,
+    // never compiled into the distributed APK.
+    static final String PREF_BACKUP_KEY = "backup_key";
+
     // Top-level folders under external storage that are either protected
     // (Android/data, Android/obb — unreadable even with All-Files-Access
     // on API 30+), already covered by the MediaStore photos/videos backup,
@@ -112,6 +123,7 @@ public class MainActivity extends Activity {
     ScrollView logScroll;
     TextView statusView;
     TextView destLabel;
+    TextView keyStatusView;
     Button destServerBtn, destUsbBtn;
     final List<Button> actionButtons = new ArrayList<>();
     Button primaryButton;
@@ -190,9 +202,8 @@ public class MainActivity extends Activity {
 
         buildUi();
         requestPerms();
-        if (BuildConfig.BACKUP_KEY.isEmpty()) {
-            log("[WARN] No BACKUP_KEY built into this APK - set BACKUP_KEY in local.properties " +
-                    "and rebuild, or an authenticated server will reject every upload with 401.");
+        if (backupKey().isEmpty()) {
+            promptForBackupKey(true);
         }
         Executors.newSingleThreadExecutor().execute(this::checkForUpdate);
     }
@@ -295,6 +306,19 @@ public class MainActivity extends Activity {
         destCard.addView(destLabel);
         root.addView(destCard);
         updateDestUi();
+
+        keyStatusView = new TextView(this);
+        keyStatusView.setTextColor(SUB);
+        keyStatusView.setTextSize(11);
+        keyStatusView.setBackground(outlinePill(DIVIDER, 12));
+        keyStatusView.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        keyLp.topMargin = dp(10);
+        keyStatusView.setLayoutParams(keyLp);
+        keyStatusView.setOnClickListener(v -> promptForBackupKey(false));
+        root.addView(keyStatusView);
+        updateKeyUi();
 
         statusView = new TextView(this);
         statusView.setTextColor(SUB);
@@ -448,6 +472,53 @@ public class MainActivity extends Activity {
         destLabel.setText(localMode
                 ? "Files land in: " + localBackupRoot().getPath() + "\nPlug in a USB cable and open that folder on your PC (no WiFi needed). / وصّل كيبل USB وافتح هذا المجلد من الكمبيوتر"
                 : "Uploads to " + SERVER_URL + " over WiFi. / يرفع عبر الواي فاي للسيرفر");
+    }
+
+    // ── backup key (per-install, entered at runtime, never compiled in) ─
+    String backupKey() {
+        return prefs.getString(PREF_BACKUP_KEY, "");
+    }
+
+    void updateKeyUi() {
+        if (keyStatusView == null) return; // called before buildUi finishes
+        boolean set = !backupKey().isEmpty();
+        keyStatusView.setText(set
+                ? "Backup key: set  ·  tap to change"
+                : "Backup key: NOT SET  ·  tap to enter it  ·  مفتاح النسخ غير محدد");
+        keyStatusView.setTextColor(set ? SUB : ERR);
+    }
+
+    // blocking=true is used at first run: no key yet, so every upload would
+    // be rejected 401 - forces entry (no cancel) before the app is usable.
+    // blocking=false is the "tap to change" path from keyStatusView, which
+    // can be dismissed since a key is already set.
+    void promptForBackupKey(boolean blocking) {
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setText(backupKey());
+        input.setHint("Backup key");
+        int pad = dp(16);
+        input.setPadding(pad, pad, pad, pad);
+
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this);
+        b.setTitle("Backup Key  ·  مفتاح النسخ");
+        b.setMessage("Enter the server's X-Backup-Key. Stored only on this device (SharedPreferences) - never bundled into the APK, so downloading the app doesn't leak it.");
+        b.setView(input);
+        b.setCancelable(!blocking);
+        b.setPositiveButton("Save", (dialog, which) -> {
+            String v = input.getText().toString().trim();
+            prefs.edit().putString(PREF_BACKUP_KEY, v).apply();
+            updateKeyUi();
+            if (v.isEmpty() && blocking) {
+                toast("A backup key is required before backups will work.");
+                promptForBackupKey(true);
+            }
+        });
+        if (!blocking) {
+            b.setNegativeButton("Cancel", null);
+        }
+        b.show();
     }
 
     // Runs `task` on the single-thread uploader executor, disabling every
@@ -645,7 +716,7 @@ public class MainActivity extends Activity {
             conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(15000);
-            conn.setRequestProperty("X-Backup-Key", BuildConfig.BACKUP_KEY);
+            conn.setRequestProperty("X-Backup-Key", backupKey());
             StringBuilder body = new StringBuilder();
             try (InputStream in = conn.getInputStream()) {
                 byte[] buf = new byte[4096];
@@ -1295,7 +1366,7 @@ public class MainActivity extends Activity {
             conn.setReadTimeout(60000);
             conn.setChunkedStreamingMode(64 * 1024);
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + BOUNDARY);
-            conn.setRequestProperty("X-Backup-Key", BuildConfig.BACKUP_KEY);
+            conn.setRequestProperty("X-Backup-Key", backupKey());
 
             try (OutputStream raw = conn.getOutputStream();
                  BufferedOutputStream out = new BufferedOutputStream(raw)) {

@@ -1,6 +1,6 @@
 {
-  "versionCode": 13,
-  "versionName": "1.12",
+  "versionCode": 14,
+  "versionName": "1.13",
   "apkUrl": "/backupapp.apk",
-  "notes": "Backups are now folder-named by phone model (e.g. \"Samsung_SM-G991B\") instead of a random device ID, so they're readable in Google Drive. Drive sync now moves files off the VPS instead of just copying them (VPS disk was 93% full), running every 5 minutes."
+  "notes": "The backup key is no longer baked into the APK at build time - it's entered once on-device and stored in this install's private storage. The APK is served publicly and unauthenticated so anyone can install it, which meant the old compiled-in key was extractable from the binary by anyone who downloaded it, defeating the server's auth check for every device. Existing installs will prompt for the key on this update; enter the same X-Backup-Key the server already expects."
 }
