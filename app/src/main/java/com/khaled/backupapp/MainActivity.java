@@ -188,7 +188,6 @@ public class MainActivity extends Activity {
         localMode = prefs.getBoolean("local_mode", false);
         manifestFile = new File(getFilesDir(), "manifest.properties");
         loadManifest();
-        Executors.newSingleThreadExecutor().execute(this::fetchServerManifest);
 
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "BackupApp:backup");
@@ -203,7 +202,11 @@ public class MainActivity extends Activity {
         buildUi();
         requestPerms();
         if (backupKey().isEmpty()) {
+            // No key yet - fetchServerManifest() needs one, so it's kicked off
+            // from promptForBackupKey()'s Save handler instead, once entered.
             promptForBackupKey(true);
+        } else {
+            Executors.newSingleThreadExecutor().execute(this::fetchServerManifest);
         }
         Executors.newSingleThreadExecutor().execute(this::checkForUpdate);
     }
@@ -508,11 +511,16 @@ public class MainActivity extends Activity {
         b.setCancelable(!blocking);
         b.setPositiveButton("Save", (dialog, which) -> {
             String v = input.getText().toString().trim();
-            prefs.edit().putString(PREF_BACKUP_KEY, v).apply();
-            updateKeyUi();
-            if (v.isEmpty() && blocking) {
+            if (v.isEmpty()) {
                 toast("A backup key is required before backups will work.");
                 promptForBackupKey(true);
+                return;
+            }
+            boolean firstTimeSet = backupKey().isEmpty();
+            prefs.edit().putString(PREF_BACKUP_KEY, v).apply();
+            updateKeyUi();
+            if (firstTimeSet) {
+                Executors.newSingleThreadExecutor().execute(this::fetchServerManifest);
             }
         });
         if (!blocking) {
