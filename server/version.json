@@ -1,6 +1,6 @@
 {
-  "versionCode": 15,
-  "versionName": "1.14",
+  "versionCode": 16,
+  "versionName": "1.15",
   "apkUrl": "/backupapp.apk",
-  "notes": "Fixes backups that were failing to upload: the old build pointed at a server address (72-60-89-132.sslip.io) that is no longer reachable. This build sends backups to the current server endpoint. Signed with the same key, so it installs as a normal update."
+  "notes": "Points backups at the current server endpoint (the tunnel is now supervised by pm2). Installs as a normal same-signature update."
 }
