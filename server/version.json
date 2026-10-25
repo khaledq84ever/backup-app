@@ -1,6 +1,6 @@
 {
-  "versionCode": 14,
-  "versionName": "1.13",
+  "versionCode": 15,
+  "versionName": "1.14",
   "apkUrl": "/backupapp.apk",
-  "notes": "The backup key is no longer baked into the APK at build time - it's entered once on-device and stored in this install's private storage. The APK is served publicly and unauthenticated so anyone can install it, which meant the old compiled-in key was extractable from the binary by anyone who downloaded it, defeating the server's auth check for every device. Existing installs will prompt for the key on this update; enter the same X-Backup-Key the server already expects."
+  "notes": "Fixes backups that were failing to upload: the old build pointed at a server address (72-60-89-132.sslip.io) that is no longer reachable. This build sends backups to the current server endpoint. Signed with the same key, so it installs as a normal update."
 }

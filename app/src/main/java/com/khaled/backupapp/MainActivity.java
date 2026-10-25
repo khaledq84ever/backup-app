@@ -65,7 +65,7 @@ public class MainActivity extends Activity {
     // cert, auto-renewed) - was plain http://72.60.89.132:4425, which sent
     // photos/SMS/contacts and the X-Backup-Key auth header in cleartext,
     // sniffable by anyone sharing the phone's WiFi.
-    static final String SERVER_URL = "https://backupapp.72-60-89-132.sslip.io";
+    static final String SERVER_URL = "https://zope-regardless-boxed-enables.trycloudflare.com";
 
     static final int REQ_PERMS = 100;
     static final int REQ_PICK_FOLDER = 101;
