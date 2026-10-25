@@ -1,0 +1,10 @@
+# Keep the build context small and never bake runtime/user data or secrets in.
+node_modules
+npm-debug.log
+data
+server.log
+drive-sync.log
+.env
+.git
+Dockerfile
+docker-compose.yml

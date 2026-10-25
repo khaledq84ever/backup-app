@@ -1,0 +1,25 @@
+# Run the Backup App server in a container.
+#
+#   BACKUP_APP_KEY=$(openssl rand -hex 32) docker compose up -d --build
+#
+# or put BACKUP_APP_KEY in a .env file next to this one (see .env.example).
+services:
+  backup-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: backup-app-server:latest
+    container_name: backup-app-server
+    restart: unless-stopped
+    ports:
+      - "${PORT:-4425}:4425"
+    environment:
+      # Required — the server exits if this is unset. No default on purpose.
+      BACKUP_APP_KEY: ${BACKUP_APP_KEY:?set BACKUP_APP_KEY in env or a .env file}
+      PORT: 4425
+    volumes:
+      # Persist uploaded backups across container recreation / image rebuilds.
+      - backup-data:/app/data
+
+volumes:
+  backup-data:
